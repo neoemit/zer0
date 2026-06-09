@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 import { buildApp } from '../src/app.js';
 
@@ -344,7 +345,7 @@ test('admin endpoints require a configured token', async () => {
   await app.close();
 });
 
-test('homepage explains retention, has improved copy button UI, includes a custom slug generator, and links the favicon', async () => {
+test('homepage explains retention, has improved copy button UI, includes a custom slug generator, links the favicon, and has a self-hosting footer', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, retentionDays: 30 });
 
   const response = await app.inject({ method: 'GET', url: '/' });
@@ -357,6 +358,11 @@ test('homepage explains retention, has improved copy button UI, includes a custo
   assert.match(response.body, /result-card/);
   assert.match(response.body, /captcha-wrap/);
   assert.match(response.body, /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg">/);
+  assert.match(response.body, /<footer class="site-footer"/);
+  assert.match(response.body, /Made with <span class="heart" aria-label="love">❤️<\/span> in Cape Town/);
+  assert.match(response.body, /Self-host your own zer0/);
+  assert.match(response.body, /href="https:\/\/github\.com\/neoemit\/zer0"/);
+  assert.match(response.body, /rel="noopener noreferrer"/);
   await app.close();
 });
 
@@ -388,6 +394,17 @@ test('missing short URLs render a branded invalid-link page instead of plain not
   assert.match(response.body, /href="\/favicon\.svg"/);
   assert.doesNotMatch(response.body, /^Not found$/);
   await app.close();
+});
+
+test('README documents homepage polish, invalid-link handling, and self-hosting source link', async () => {
+  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+
+  assert.match(readme, /custom slug generator/i);
+  assert.match(readme, /branded invalid-link page/i);
+  assert.match(readme, /stylised zero favicon/i);
+  assert.match(readme, /Made with ❤️ in Cape Town/i);
+  assert.match(readme, /Self-host your own zer0/i);
+  assert.match(readme, /https:\/\/github\.com\/neoemit\/zer0/);
 });
 
 test('custom slug creation rejects slugs that already exist', async () => {

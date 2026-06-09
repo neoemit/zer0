@@ -345,6 +345,78 @@ test('admin endpoints require a configured token', async () => {
   await app.close();
 });
 
+test('admin-only mode requires admin authentication before creating short URLs', async () => {
+  const store = new MemoryStore();
+  const app = await buildApp({
+    store,
+    publicBaseUrl: 'http://sho.rt',
+    captcha: { provider: 'none' },
+    adminOnlyMode: true,
+    adminToken: 'secret',
+  });
+
+  const missingToken = await app.inject({
+    method: 'POST',
+    url: '/api/shorten',
+    payload: { url: 'https://example.com/private', slug: 'private1' },
+  });
+  const wrongToken = await app.inject({
+    method: 'POST',
+    url: '/api/shorten',
+    headers: { 'x-admin-token': 'wrong' },
+    payload: { url: 'https://example.com/private', slug: 'private1' },
+  });
+  const created = await app.inject({
+    method: 'POST',
+    url: '/api/shorten',
+    headers: { 'x-admin-token': 'secret' },
+    payload: { url: 'https://example.com/private', slug: 'private1' },
+  });
+  const redirect = await app.inject({ method: 'GET', url: '/private1' });
+
+  assert.equal(missingToken.statusCode, 401);
+  assert.deepEqual(JSON.parse(missingToken.body), { error: 'Unauthorized' });
+  assert.equal(wrongToken.statusCode, 401);
+  assert.equal(created.statusCode, 201);
+  assert.equal(JSON.parse(created.body).shortUrl, 'http://sho.rt/private1');
+  assert.equal(redirect.statusCode, 302);
+  assert.equal(redirect.headers.location, 'https://example.com/private');
+  await app.close();
+});
+
+test('admin-only mode cannot create links when ADMIN_TOKEN is not configured', async () => {
+  const store = new MemoryStore();
+  const app = await buildApp({ store, publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminOnlyMode: true });
+
+  const response = await app.inject({ method: 'POST', url: '/api/shorten', payload: { url: 'https://example.com/private', slug: 'private2' } });
+
+  assert.equal(response.statusCode, 503);
+  assert.deepEqual(JSON.parse(response.body), { error: 'Admin-only mode requires ADMIN_TOKEN to be configured' });
+  assert.equal(await store.get('private2'), null);
+  await app.close();
+});
+
+test('admin-only homepage gates the creation form behind the admin token', async () => {
+  const app = await buildApp({
+    store: new MemoryStore(),
+    publicBaseUrl: 'http://sho.rt',
+    captcha: { provider: 'none' },
+    adminOnlyMode: true,
+    adminToken: 'secret',
+  });
+
+  const response = await app.inject({ method: 'GET', url: '/' });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(response.body, /Admin-only mode/);
+  assert.match(response.body, /id="creation-auth"/);
+  assert.match(response.body, /id="admin-token"/);
+  assert.match(response.body, /id="creator-panel"[^>]*hidden/);
+  assert.match(response.body, /zer0:createAdminToken/);
+  assert.match(response.body, /X-Admin-Token/);
+  await app.close();
+});
+
 test('homepage explains retention, has improved copy button UI, includes a custom slug generator, links the favicon, and has a self-hosting footer', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, retentionDays: 30 });
 
@@ -405,6 +477,18 @@ test('README documents homepage polish, invalid-link handling, and self-hosting 
   assert.match(readme, /Made with ❤️ in Cape Town/i);
   assert.match(readme, /Self-host your own zer0/i);
   assert.match(readme, /https:\/\/github\.com\/neoemit\/zer0/);
+});
+
+test('docs and examples document ADMIN_ONLY_MODE creation gating', async () => {
+  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+  const envExample = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
+  const compose = await readFile(new URL('../docker-compose.yml', import.meta.url), 'utf8');
+
+  assert.match(readme, /ADMIN_ONLY_MODE/);
+  assert.match(readme, /Only visitors with the admin token can create short URLs/i);
+  assert.match(readme, /Redirects stay public/i);
+  assert.match(envExample, /ADMIN_ONLY_MODE=false/);
+  assert.match(compose, /ADMIN_ONLY_MODE: \$\{ADMIN_ONLY_MODE:-false\}/);
 });
 
 test('custom slug creation rejects slugs that already exist', async () => {

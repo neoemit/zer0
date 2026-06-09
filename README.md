@@ -1,0 +1,227 @@
+# ⚡ zer0
+
+[![License: MIT](https://img.shields.io/github/license/neoemit/zer0?style=flat-square)](LICENSE)
+![Node.js >=22](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=node.js&logoColor=white)
+![Docker Compose](https://img.shields.io/badge/docker-compose-2496ED?style=flat-square&logo=docker&logoColor=white)
+![Fastify](https://img.shields.io/badge/Fastify-5.x-000000?style=flat-square&logo=fastify&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-7-C92F24?style=flat-square&logo=redis&logoColor=white)
+
+A tiny, fast, self-hosted URL shortener built for Docker Compose. zer0 keeps the redirect path lean, protects link creation with CAPTCHA, stores links in Redis, and includes a browser admin dashboard for stats and cleanup.
+
+## ✨ Features
+
+- 🚀 **Fast redirect hot path**: `GET /:code` validates the slug, checks the in-process hot cache, falls back to Redis on cache miss, records stats, and returns a `302 Location`.
+- 🧠 **In-process hot cache**: repeated redirects avoid Redis reads while still recording click stats.
+- 🧩 **Custom or generated slugs**: users can provide a safe custom slug or let zer0 generate one.
+- 🛡️ **Cloudflare Turnstile on creation only**: redirects never pay the CAPTCHA cost.
+- 🗄️ **Redis persistence**: Docker Compose uses Redis 7 with AOF enabled.
+- ⏳ **Configurable retention**: keep links forever or apply Redis TTLs to links, metadata, and stats.
+- 📊 **Admin stats**: total clicks plus country buckets from local GeoIP lookup.
+- 🧭 **Admin dashboard**: token-based login, local token persistence, pagination, country names/flags, refresh, logout, per-link deletion, and accessible status updates.
+- 🧹 **Cleanup controls**: delete one link or all links; deletion removes metadata, stats, and hot-cache entries so slugs can be reused with fresh counters.
+
+## 🧱 Stack
+
+- **Node.js 24 + Fastify 5**: small service with low-overhead HTTP routing.
+- **Redis 7**: persistent key/value backing store with optional per-link TTLs.
+- **geoip-lite**: local country-level GeoIP lookup; unknown/private IPs are grouped as `ZZ`.
+- **Cloudflare Turnstile**: CAPTCHA protection for URL creation.
+- **Docker Compose**: one app container plus Redis.
+
+## 🚀 Quick start
+
+```bash
+cp .env.example .env
+# edit PUBLIC_BASE_URL, TURNSTILE_SITE_KEY, TURNSTILE_SECRET_KEY, and ADMIN_TOKEN
+docker compose up -d --build
+```
+
+Then open `http://localhost:3000` or your configured `PUBLIC_BASE_URL`.
+
+Useful endpoints:
+
+- 🌐 Homepage: `/`
+- 🩺 Health check: `/healthz`
+- 🔐 Admin dashboard: `/admin` when `ADMIN_TOKEN` is configured
+
+## ⚙️ Configuration
+
+- `PUBLIC_BASE_URL`: public origin used when returning short URLs.
+- `PORT`: host/container app port. Default `3000`.
+- `TRUST_PROXY`: set `true` behind a trusted reverse proxy so IP-based stats use forwarded client IPs.
+- `CAPTCHA_PROVIDER`: `turnstile` or `none`. Defaults to `turnstile` when a Turnstile secret exists, otherwise `none`.
+- `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`: Cloudflare Turnstile keys for creation CAPTCHA.
+- `CODE_LENGTH`: generated short-code length. Default `7` gives about 3.5 trillion possible base62 codes.
+- `RETENTION_DAYS`: link retention in days. `0` or unset means unlimited retention; positive values become Redis TTLs for links, metadata, and stats.
+- `ADMIN_TOKEN`: enables admin-only stats/list/delete APIs and the `/admin` dashboard. Leave unset to disable the admin API.
+- `HOT_CACHE_MAX_ENTRIES`: max in-process redirect cache entries.
+- `HOT_CACHE_TTL_MS`: hot cache TTL in milliseconds.
+- `REDIRECT_CACHE_CONTROL`: `Cache-Control` header on redirects. Default `public, max-age=300` helps browsers/CDNs cache redirects.
+- `CREATE_RATE_LIMIT_MAX` / `CREATE_RATE_LIMIT_WINDOW`: rate limit for the creation endpoint only.
+
+For local development without CAPTCHA:
+
+```bash
+CAPTCHA_PROVIDER=none
+```
+
+> ⚠️ Do not use `CAPTCHA_PROVIDER=none` on a public instance.
+
+## 🔌 API
+
+### Create a short URL
+
+```bash
+curl -X POST http://localhost:3000/api/shorten \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://example.com","slug":"optional-custom-slug","captchaToken":"TURNSTILE_TOKEN"}'
+```
+
+Response:
+
+```json
+{
+  "code": "abc123",
+  "shortUrl": "https://z.example.com/abc123",
+  "targetUrl": "https://example.com/",
+  "expiresInDays": null
+}
+```
+
+`expiresInDays` is `null` for unlimited retention, otherwise it is the configured positive `RETENTION_DAYS` value.
+
+### Redirect
+
+```bash
+curl -i http://localhost:3000/abc123
+```
+
+Returns `302 Location: <target-url>` when the slug exists.
+
+## 🔐 Admin API and dashboard
+
+Admin routes require `ADMIN_TOKEN`. The simplest header form is:
+
+```bash
+-H 'X-Admin-Token: $ADMIN_TOKEN'
+```
+
+The admin API also accepts a bearer `Authorization` header.
+
+If `ADMIN_TOKEN` is unset, admin APIs return `503` and stay disabled.
+
+### Stats for one link
+
+```bash
+curl -H 'X-Admin-Token: $ADMIN_TOKEN' \
+  http://localhost:3000/api/stats/abc123
+```
+
+```json
+{
+  "code": "abc123",
+  "totalClicks": 42,
+  "countries": {
+    "IT": 20,
+    "US": 12,
+    "ZZ": 10
+  }
+}
+```
+
+### List all links
+
+```bash
+curl -H 'X-Admin-Token: $ADMIN_TOKEN' \
+  http://localhost:3000/api/admin/links
+```
+
+```json
+{
+  "links": [
+    {
+      "code": "abc123",
+      "shortUrl": "https://z.example.com/abc123",
+      "targetUrl": "https://example.com/",
+      "createdAt": "2026-06-08T12:00:00.000Z",
+      "totalClicks": 42,
+      "countries": {
+        "IT": 20,
+        "US": 12,
+        "ZZ": 10
+      }
+    }
+  ]
+}
+```
+
+### Delete links
+
+Deletion removes the URL record, metadata, stats, and in-process hot-cache entry. Once deleted, the slug is available again; if recreated, counters start from zero.
+
+```bash
+# Delete one record
+curl -X DELETE -H 'X-Admin-Token: $ADMIN_TOKEN' \
+  http://localhost:3000/api/admin/links/abc123
+
+# Delete all records
+curl -X DELETE -H 'X-Admin-Token: $ADMIN_TOKEN' \
+  http://localhost:3000/api/admin/links
+```
+
+### Browser dashboard
+
+Open `/admin`, paste `ADMIN_TOKEN`, and load the dashboard.
+
+The dashboard:
+
+- stores a successfully used token in browser `localStorage` for future visits;
+- hides the token form and shows links only after authentication succeeds;
+- supports refresh, logout, pagination, and per-link delete buttons;
+- asks for confirmation before deleting a link;
+- displays country stats with flags and full country names;
+- suppresses zero-valued country counters for unclicked links;
+- clears the stored token on logout or failed `401` authentication.
+
+## 🧪 Development
+
+```bash
+npm install
+npm test
+npm run lint
+npm start
+```
+
+Local app defaults:
+
+```bash
+CAPTCHA_PROVIDER=none npm start
+```
+
+## 🏎️ Performance notes
+
+- Keep Redis on the same Docker network/host as the app.
+- Put a CDN or reverse proxy in front and keep `REDIRECT_CACHE_CONTROL` enabled if links do not need instant retargeting.
+- Scale reads horizontally by running multiple `zer0` containers against the same Redis; each container keeps its own hot cache.
+- Every redirect records click stats in Redis, even when the target URL comes from hot cache.
+- The creation endpoint is intentionally heavier because it validates URLs, rate-limits, and verifies CAPTCHA. It is separate from the redirect hot path.
+
+## 📦 Dependency and license notes
+
+Direct runtime dependencies are permissively licensed:
+
+- `@fastify/formbody`: MIT
+- `@fastify/rate-limit`: MIT
+- `fastify`: MIT
+- `geoip-lite`: Apache-2.0
+- `ioredis`: MIT
+- `nanoid`: MIT
+- `undici`: MIT
+
+`npm audit --omit=dev --audit-level=moderate` currently reports zero known production vulnerabilities.
+
+## 📄 License
+
+zer0 is open source under the [MIT License](LICENSE).
+
+MIT is a good fit here because zer0 is an infrastructure tool meant to be easy to self-host, fork, embed, and improve with minimal legal friction while remaining compatible with the current permissive dependency set.

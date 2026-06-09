@@ -1,0 +1,41 @@
+services:
+  zer0:
+    build: .
+    image: zer0:local
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      REDIS_URL: redis://redis:6379/0
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      CAPTCHA_PROVIDER: ${CAPTCHA_PROVIDER:-turnstile}
+      TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
+      CODE_LENGTH: ${CODE_LENGTH:-7}
+      RETENTION_DAYS: ${RETENTION_DAYS:-0}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      HOT_CACHE_MAX_ENTRIES: ${HOT_CACHE_MAX_ENTRIES:-100000}
+      HOT_CACHE_TTL_MS: ${HOT_CACHE_TTL_MS:-300000}
+      REDIRECT_CACHE_CONTROL: ${REDIRECT_CACHE_CONTROL:-public, max-age=300}
+      CREATE_RATE_LIMIT_MAX: ${CREATE_RATE_LIMIT_MAX:-20}
+      CREATE_RATE_LIMIT_WINDOW: ${CREATE_RATE_LIMIT_WINDOW:-1 minute}
+    ports:
+      - "${PORT:-3000}:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  redis-data:

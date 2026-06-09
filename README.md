@@ -14,6 +14,7 @@ A tiny, fast, self-hosted URL shortener built for Docker Compose. zer0 keeps the
 - 🧠 **In-process hot cache**: repeated redirects avoid Redis reads while still recording click stats.
 - 🧩 **Custom slug generator**: users can provide a safe custom slug or let zer0 generate a friendly one from the homepage.
 - 🛡️ **Cloudflare Turnstile on creation only**: redirects never pay the CAPTCHA cost.
+- 🔒 **Admin-only creation mode**: set `ADMIN_ONLY_MODE=true` so only visitors with the admin token can create short URLs while redirects stay public.
 - 🗄️ **Redis persistence**: Docker Compose uses Redis 7 with AOF enabled.
 - ⏳ **Configurable retention**: keep links forever or apply Redis TTLs to links, metadata, and stats.
 - 🎨 **Polished public UI**: the homepage includes a stylised zero favicon, copy-friendly result card, and a tasteful “Made with ❤️ in Cape Town” footer.
@@ -58,6 +59,7 @@ Useful endpoints:
 - `CODE_LENGTH`: generated short-code length. Default `7` gives about 3.5 trillion possible base62 codes.
 - `RETENTION_DAYS`: link retention in days. `0` or unset means unlimited retention; positive values become Redis TTLs for links, metadata, and stats.
 - `ADMIN_TOKEN`: enables admin-only stats/list/delete APIs and the `/admin` dashboard. Leave unset to disable the admin API.
+- `ADMIN_ONLY_MODE`: set to `true` to require the admin token before visitors can access the homepage creator or call `POST /api/shorten`. Redirects stay public.
 - `HOT_CACHE_MAX_ENTRIES`: max in-process redirect cache entries.
 - `HOT_CACHE_TTL_MS`: hot cache TTL in milliseconds.
 - `REDIRECT_CACHE_CONTROL`: `Cache-Control` header on redirects. Default `public, max-age=300` helps browsers/CDNs cache redirects.
@@ -80,6 +82,17 @@ curl -X POST http://localhost:3000/api/shorten \
   -H 'content-type: application/json' \
   -d '{"url":"https://example.com","slug":"optional-custom-slug","captchaToken":"TURNSTILE_TOKEN"}'
 ```
+
+When `ADMIN_ONLY_MODE=true`, creation also requires the admin token:
+
+```bash
+curl -X POST http://localhost:3000/api/shorten \
+  -H 'content-type: application/json' \
+  -H 'X-Admin-Token: $ADMIN_TOKEN' \
+  -d '{"url":"https://example.com","slug":"optional-custom-slug","captchaToken":"TURNSTILE_TOKEN"}'
+```
+
+Only visitors with the admin token can create short URLs in admin-only mode. Redirects stay public, so every short URL that an admin creates can still be used by anyone.
 
 Response:
 
@@ -107,6 +120,7 @@ Returns `302 Location: <target-url>` when the slug exists. If the short URL is e
 The public homepage is intentionally lightweight and friendly:
 
 - a URL creation form with optional custom slug input and a custom slug generator;
+- an admin-token gate for the creation form when `ADMIN_ONLY_MODE=true`;
 - a copy-friendly result card that explains the link retention window;
 - a stylised zero favicon served from `/favicon.svg`;
 - a footer that says “Made with ❤️ in Cape Town”;

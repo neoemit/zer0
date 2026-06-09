@@ -57,3 +57,9 @@ test('retention config is unlimited by default or when set to 0', () => {
   assert.equal(loadConfig({ RETENTION_DAYS: '0' }).retentionDays, 0);
   assert.equal(loadConfig({ RETENTION_DAYS: '90' }).retentionDays, 90);
 });
+
+test('admin-only mode is enabled only by an explicit true boolean env value', () => {
+  assert.equal(loadConfig({}).adminOnlyMode, false);
+  assert.equal(loadConfig({ ADMIN_ONLY_MODE: 'false' }).adminOnlyMode, false);
+  assert.equal(loadConfig({ ADMIN_ONLY_MODE: 'true' }).adminOnlyMode, true);
+});

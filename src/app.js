@@ -24,6 +24,7 @@ export async function buildApp(opts) {
   const redirectCacheControl = opts.redirectCacheControl || 'public, max-age=300';
   const captcha = opts.captcha || { provider: 'none' };
   const adminToken = opts.adminToken || '';
+  const adminOnlyMode = opts.adminOnlyMode === true;
   const geolocateIp = opts.geolocateIp || defaultGeolocateIp;
   const store = opts.store;
   if (!store) throw new Error('store is required');
@@ -43,7 +44,7 @@ export async function buildApp(opts) {
 
   app.get('/', async (_request, reply) => {
     reply.type('text/html; charset=utf-8');
-    return renderHome({ siteKey: captcha.siteKey || '', captchaEnabled: !captchaCanBeSkipped(captcha), retentionDays });
+    return renderHome({ siteKey: captcha.siteKey || '', captchaEnabled: !captchaCanBeSkipped(captcha), retentionDays, adminOnlyMode });
   });
 
   app.get('/admin', async (_request, reply) => {
@@ -52,6 +53,8 @@ export async function buildApp(opts) {
   });
 
   app.post('/api/shorten', { config: { rateLimit: opts.rateLimit ?? { max: 20, timeWindow: '1 minute' } } }, async (request, reply) => {
+    if (adminOnlyMode && !authorizeAdmin(request, reply, adminToken, { disabledMessage: 'Admin-only mode requires ADMIN_TOKEN to be configured' })) return reply;
+
     const body = request.body || {};
     const captchaToken = body.captchaToken || body['cf-turnstile-response'];
     const captchaResult = await verifyCaptcha({ captcha, token: captchaToken, ip: request.ip });
@@ -154,9 +157,10 @@ function sendInvalidLinkPage(reply) {
   return reply.code(404).type('text/html; charset=utf-8').send(renderInvalidLinkPage());
 }
 
-function authorizeAdmin(request, reply, adminToken) {
+function authorizeAdmin(request, reply, adminToken, options = {}) {
+  const disabledMessage = options.disabledMessage || 'Admin API is disabled until ADMIN_TOKEN is configured';
   if (!adminToken) {
-    reply.code(503).send({ error: 'Admin API is disabled until ADMIN_TOKEN is configured' });
+    reply.code(503).send({ error: disabledMessage });
     return false;
   }
 
@@ -186,7 +190,7 @@ async function allocateCode(store, targetUrl, codeLength, retentionSeconds) {
   throw new Error('Could not allocate a unique short code');
 }
 
-function renderHome({ siteKey, captchaEnabled, retentionDays }) {
+function renderHome({ siteKey, captchaEnabled, retentionDays, adminOnlyMode }) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -212,6 +216,13 @@ function renderHome({ siteKey, captchaEnabled, retentionDays }) {
     .muted { color: #aaaabc; }
     .subtitle { margin: .7rem 0 0; font-size: 1.08rem; }
     .retention-note { margin: 1rem 0 1.35rem; padding: .85rem 1rem; border: 1px solid #30303b; border-radius: 16px; background: #09090d; color: #d7d7e4; }
+    .admin-gate { margin: 1.25rem 0; padding: 1rem; border: 1px solid #344258; border-radius: 18px; background: linear-gradient(135deg, #101925 0%, #111118 70%); }
+    .admin-gate h2 { margin: 0 0 .4rem; font-size: 1.05rem; }
+    .admin-gate p { margin: .35rem 0 0; }
+    .admin-token-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .65rem; align-items: end; margin-top: .85rem; }
+    .creator-panel[hidden], .admin-gate[hidden] { display: none !important; }
+    .auth-status { min-height: 1.35rem; margin-top: .7rem; }
+    .success { color: #9ee6b8; }
     .field-with-action { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .65rem; align-items: center; }
     .secondary-button { white-space: nowrap; background: #20202b; color: #f4f4ff; border-color: #363648; }
     .captcha-wrap { margin-top: 1.25rem; }
@@ -233,7 +244,7 @@ function renderHome({ siteKey, captchaEnabled, retentionDays }) {
     .source-note a { font-weight: 900; text-decoration-thickness: .12em; text-underline-offset: .18em; }
     @media (prefers-reduced-motion: reduce) { .heart { animation: none; } }
     @keyframes heartbeat { 0%, 45%, 100% { transform: scale(1); } 15% { transform: scale(1.16); } 30% { transform: scale(.96); } }
-    @media (max-width: 640px) { .page-shell { width: min(92vw, 720px); } main { padding: 1.35rem; } .field-with-action, .result-row { grid-template-columns: 1fr; } .secondary-button, .copy-short-url { width: 100%; } }
+    @media (max-width: 640px) { .page-shell { width: min(92vw, 720px); } main { padding: 1.35rem; } .field-with-action, .result-row, .admin-token-row { grid-template-columns: 1fr; } .secondary-button, .copy-short-url, .admin-token-row button { width: 100%; } }
   </style>
 </head>
 <body>
@@ -242,21 +253,36 @@ function renderHome({ siteKey, captchaEnabled, retentionDays }) {
       <h1>zer0</h1>
       <p class="muted subtitle">Fast, self-hosted URL shortener.</p>
       <p class="retention-note">${retentionDays > 0 ? `Links are retained for up to ${retentionDays} days, then automatically expire.` : 'Links are retained until an admin removes them.'}</p>
-      <form id="form">
-        <label for="url">Long URL</label>
-        <input id="url" name="url" type="url" required placeholder="https://example.com/really/long/url" autocomplete="url">
-        <label for="slug">Custom slug, optional</label>
-        <div class="field-with-action">
-          <input id="slug" name="slug" pattern="[A-Za-z0-9_-]{3,48}" minlength="3" maxlength="48" placeholder="cosmic-otter-42" autocomplete="off" aria-describedby="slug-help">
-          <button type="button" id="generate-slug" class="secondary-button" aria-label="Generate a random custom slug">Generate</button>
-        </div>
-        <p id="slug-help" class="muted">Use 3–48 letters, numbers, underscores, or dashes. Or generate a friendly random one.</p>
-        <div class="captcha-wrap">
-          ${captchaEnabled ? `<div class="cf-turnstile" data-sitekey="${escapeHtml(siteKey)}"></div>` : '<p class="muted">CAPTCHA is disabled until TURNSTILE_SECRET_KEY is configured.</p>'}
-        </div>
-        <button type="submit" class="submit-button">Shorten</button>
-      </form>
-      <section id="result" class="result-card" aria-live="polite"></section>
+      ${adminOnlyMode ? `<section id="creation-auth" class="admin-gate" aria-labelledby="creation-auth-title">
+        <h2 id="creation-auth-title">Admin-only mode</h2>
+        <p class="muted">Only visitors with the admin token can create short URLs on this zer0 instance. Redirects stay public.</p>
+        <form id="admin-token-form">
+          <label for="admin-token">Admin token</label>
+          <div class="admin-token-row">
+            <input id="admin-token" name="adminToken" type="password" autocomplete="current-password" required placeholder="Paste ADMIN_TOKEN" aria-describedby="admin-token-help">
+            <button type="submit">Unlock creator</button>
+          </div>
+          <p id="admin-token-help" class="muted">The token is stored only in this browser's local storage and sent as an X-Admin-Token header when creating links.</p>
+        </form>
+        <p id="auth-status" class="auth-status muted" aria-live="polite"></p>
+      </section>` : ''}
+      <section id="creator-panel" class="creator-panel"${adminOnlyMode ? ' hidden' : ''}>
+        <form id="form">
+          <label for="url">Long URL</label>
+          <input id="url" name="url" type="url" required placeholder="https://example.com/really/long/url" autocomplete="url">
+          <label for="slug">Custom slug, optional</label>
+          <div class="field-with-action">
+            <input id="slug" name="slug" pattern="[A-Za-z0-9_-]{3,48}" minlength="3" maxlength="48" placeholder="cosmic-otter-42" autocomplete="off" aria-describedby="slug-help">
+            <button type="button" id="generate-slug" class="secondary-button" aria-label="Generate a random custom slug">Generate</button>
+          </div>
+          <p id="slug-help" class="muted">Use 3–48 letters, numbers, underscores, or dashes. Or generate a friendly random one.</p>
+          <div class="captcha-wrap">
+            ${captchaEnabled ? `<div class="cf-turnstile" data-sitekey="${escapeHtml(siteKey)}"></div>` : '<p class="muted">CAPTCHA is disabled until TURNSTILE_SECRET_KEY is configured.</p>'}
+          </div>
+          <button type="submit" class="submit-button">Shorten</button>
+        </form>
+        <section id="result" class="result-card" aria-live="polite"></section>
+      </section>
     </main>
     <footer class="site-footer" aria-label="About zer0">
       <p class="footer-love">Made with <span class="heart" aria-label="love">❤️</span> in Cape Town</p>
@@ -268,6 +294,13 @@ function renderHome({ siteKey, captchaEnabled, retentionDays }) {
     const result = document.querySelector('#result');
     const slug = document.querySelector('#slug');
     const generateSlug = document.querySelector('#generate-slug');
+    const adminOnlyMode = ${adminOnlyMode ? 'true' : 'false'};
+    const createTokenStorageKey = 'zer0:createAdminToken';
+    const creationAuth = document.querySelector('#creation-auth');
+    const adminTokenForm = document.querySelector('#admin-token-form');
+    const adminToken = document.querySelector('#admin-token');
+    const authStatus = document.querySelector('#auth-status');
+    const creatorPanel = document.querySelector('#creator-panel');
     const adjectives = ['atomic', 'brisk', 'cosmic', 'crisp', 'electric', 'ember', 'frosty', 'golden', 'lunar', 'neon', 'nova', 'pixel', 'quantum', 'rapid', 'solar', 'tidy', 'turbo', 'velvet'];
     const nouns = ['badger', 'beacon', 'comet', 'falcon', 'fox', 'koala', 'otter', 'panda', 'pulse', 'rocket', 'spark', 'tiger', 'wave', 'wizard', 'yak', 'zephyr'];
 
@@ -303,6 +336,51 @@ function renderHome({ siteKey, captchaEnabled, retentionDays }) {
       textarea.remove();
     }
 
+    function currentCreateToken() {
+      if (!adminOnlyMode) return '';
+      return localStorage.getItem(createTokenStorageKey) || '';
+    }
+
+    function unlockCreator(tokenValue) {
+      if (!adminOnlyMode || !tokenValue) return;
+      if (creatorPanel) creatorPanel.hidden = false;
+      if (creationAuth) creationAuth.hidden = true;
+      if (authStatus) {
+        authStatus.textContent = 'Creator unlocked for this browser.';
+        authStatus.className = 'auth-status success';
+      }
+    }
+
+    function lockCreator(message) {
+      if (!adminOnlyMode) return;
+      localStorage.removeItem(createTokenStorageKey);
+      if (creatorPanel) creatorPanel.hidden = true;
+      if (creationAuth) creationAuth.hidden = false;
+      if (adminToken) adminToken.value = '';
+      if (authStatus && message) {
+        authStatus.textContent = message;
+        authStatus.className = 'auth-status error';
+      }
+    }
+
+    if (adminOnlyMode) {
+      const storedToken = currentCreateToken();
+      if (storedToken) {
+        if (adminToken) adminToken.value = storedToken;
+        unlockCreator(storedToken);
+      }
+      adminTokenForm?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const tokenValue = adminToken.value.trim();
+        if (!tokenValue) {
+          lockCreator('Enter the admin token to unlock URL creation.');
+          return;
+        }
+        localStorage.setItem(createTokenStorageKey, tokenValue);
+        unlockCreator(tokenValue);
+      });
+    }
+
     generateSlug.addEventListener('click', () => {
       slug.value = friendlySlug();
       slug.focus();
@@ -315,14 +393,17 @@ function renderHome({ siteKey, captchaEnabled, retentionDays }) {
       const formData = new FormData(form);
       const payload = Object.fromEntries(formData.entries());
       if (!payload.slug) delete payload.slug;
+      const headers = { 'content-type': 'application/json' };
+      if (adminOnlyMode) headers['X-Admin-Token'] = currentCreateToken();
       const response = await fetch('/api/shorten', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
       });
       const data = await response.json();
       if (!response.ok) {
         result.innerHTML = '<p class="error">' + escapeClient(data.error || 'Failed to create short URL') + '</p>';
+        if (response.status === 401 && adminOnlyMode) lockCreator('Admin token rejected. Paste the correct token to unlock URL creation.');
         if (window.turnstile) turnstile.reset();
         return;
       }

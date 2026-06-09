@@ -197,7 +197,9 @@ function renderHome({ siteKey, captchaEnabled, retentionDays }) {
   ${captchaEnabled ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : ''}
   <style>
     :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: radial-gradient(circle at top, #1b1b2f 0, #07070a 46%); color: #f5f5f7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top, #1b1b2f 0, #07070a 46%); color: #f5f5f7; }
+    .page-shell { width: min(92vw, 720px); min-height: 100vh; margin: 0 auto; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 1.25rem; align-items: center; padding: clamp(1rem, 3vw, 2rem) 0; }
     main { width: min(92vw, 720px); padding: 2rem; border: 1px solid #24242d; border-radius: 28px; background: linear-gradient(180deg, #13131c 0%, #0f0f15 100%); box-shadow: 0 24px 80px #0008; }
     h1 { margin: 0; letter-spacing: -0.06em; font-size: clamp(3rem, 9vw, 5.5rem); line-height: .9; }
     label { display: block; margin: 1rem 0 .4rem; color: #c7c7d8; font-weight: 700; }
@@ -223,29 +225,44 @@ function renderHome({ siteKey, captchaEnabled, retentionDays }) {
     .result-meta { margin: .75rem 0 0; color: #aaaabc; font-size: .92rem; }
     .error { margin-top: 1rem; color: #ffb4b4; }
     a { color: #8bd3ff; }
+    .site-footer { align-self: end; width: 100%; padding: 1rem 1.15rem; border: 1px solid #24242d; border-radius: 22px; background: linear-gradient(135deg, #101925cc 0%, #111118cc 70%); box-shadow: 0 18px 60px #0006, inset 0 1px 0 #ffffff0d; backdrop-filter: blur(14px); text-align: center; }
+    .site-footer p { margin: 0; color: #d7d7e4; line-height: 1.55; }
+    .footer-love { font-weight: 800; color: #f5f5f7; }
+    .heart { display: inline-block; filter: drop-shadow(0 0 10px #ff6b8a88); transform-origin: center; animation: heartbeat 1.8s ease-in-out infinite; }
+    .source-note { margin-top: .45rem; color: #aaaabc; font-size: .94rem; }
+    .source-note a { font-weight: 900; text-decoration-thickness: .12em; text-underline-offset: .18em; }
+    @media (prefers-reduced-motion: reduce) { .heart { animation: none; } }
+    @keyframes heartbeat { 0%, 45%, 100% { transform: scale(1); } 15% { transform: scale(1.16); } 30% { transform: scale(.96); } }
+    @media (max-width: 640px) { .page-shell { width: min(92vw, 720px); } main { padding: 1.35rem; } .field-with-action, .result-row { grid-template-columns: 1fr; } .secondary-button, .copy-short-url { width: 100%; } }
   </style>
 </head>
 <body>
-  <main>
-    <h1>zer0</h1>
-    <p class="muted subtitle">Fast, self-hosted URL shortener.</p>
-    <p class="retention-note">${retentionDays > 0 ? `Links are retained for up to ${retentionDays} days, then automatically expire.` : 'Links are retained until an admin removes them.'}</p>
-    <form id="form">
-      <label for="url">Long URL</label>
-      <input id="url" name="url" type="url" required placeholder="https://example.com/really/long/url" autocomplete="url">
-      <label for="slug">Custom slug, optional</label>
-      <div class="field-with-action">
-        <input id="slug" name="slug" pattern="[A-Za-z0-9_-]{3,48}" minlength="3" maxlength="48" placeholder="cosmic-otter-42" autocomplete="off" aria-describedby="slug-help">
-        <button type="button" id="generate-slug" class="secondary-button" aria-label="Generate a random custom slug">Generate</button>
-      </div>
-      <p id="slug-help" class="muted">Use 3–48 letters, numbers, underscores, or dashes. Or generate a friendly random one.</p>
-      <div class="captcha-wrap">
-        ${captchaEnabled ? `<div class="cf-turnstile" data-sitekey="${escapeHtml(siteKey)}"></div>` : '<p class="muted">CAPTCHA is disabled until TURNSTILE_SECRET_KEY is configured.</p>'}
-      </div>
-      <button type="submit" class="submit-button">Shorten</button>
-    </form>
-    <section id="result" class="result-card" aria-live="polite"></section>
-  </main>
+  <div class="page-shell">
+    <main>
+      <h1>zer0</h1>
+      <p class="muted subtitle">Fast, self-hosted URL shortener.</p>
+      <p class="retention-note">${retentionDays > 0 ? `Links are retained for up to ${retentionDays} days, then automatically expire.` : 'Links are retained until an admin removes them.'}</p>
+      <form id="form">
+        <label for="url">Long URL</label>
+        <input id="url" name="url" type="url" required placeholder="https://example.com/really/long/url" autocomplete="url">
+        <label for="slug">Custom slug, optional</label>
+        <div class="field-with-action">
+          <input id="slug" name="slug" pattern="[A-Za-z0-9_-]{3,48}" minlength="3" maxlength="48" placeholder="cosmic-otter-42" autocomplete="off" aria-describedby="slug-help">
+          <button type="button" id="generate-slug" class="secondary-button" aria-label="Generate a random custom slug">Generate</button>
+        </div>
+        <p id="slug-help" class="muted">Use 3–48 letters, numbers, underscores, or dashes. Or generate a friendly random one.</p>
+        <div class="captcha-wrap">
+          ${captchaEnabled ? `<div class="cf-turnstile" data-sitekey="${escapeHtml(siteKey)}"></div>` : '<p class="muted">CAPTCHA is disabled until TURNSTILE_SECRET_KEY is configured.</p>'}
+        </div>
+        <button type="submit" class="submit-button">Shorten</button>
+      </form>
+      <section id="result" class="result-card" aria-live="polite"></section>
+    </main>
+    <footer class="site-footer" aria-label="About zer0">
+      <p class="footer-love">Made with <span class="heart" aria-label="love">❤️</span> in Cape Town</p>
+      <p class="source-note">Self-host your own zer0: the source code is on <a href="https://github.com/neoemit/zer0" target="_blank" rel="noopener noreferrer">GitHub</a>.</p>
+    </footer>
+  </div>
   <script>
     const form = document.querySelector('#form');
     const result = document.querySelector('#result');

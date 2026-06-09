@@ -12,10 +12,13 @@ A tiny, fast, self-hosted URL shortener built for Docker Compose. zer0 keeps the
 
 - 🚀 **Fast redirect hot path**: `GET /:code` validates the slug, checks the in-process hot cache, falls back to Redis on cache miss, records stats, and returns a `302 Location`.
 - 🧠 **In-process hot cache**: repeated redirects avoid Redis reads while still recording click stats.
-- 🧩 **Custom or generated slugs**: users can provide a safe custom slug or let zer0 generate one.
+- 🧩 **Custom slug generator**: users can provide a safe custom slug or let zer0 generate a friendly one from the homepage.
 - 🛡️ **Cloudflare Turnstile on creation only**: redirects never pay the CAPTCHA cost.
 - 🗄️ **Redis persistence**: Docker Compose uses Redis 7 with AOF enabled.
 - ⏳ **Configurable retention**: keep links forever or apply Redis TTLs to links, metadata, and stats.
+- 🎨 **Polished public UI**: the homepage includes a stylised zero favicon, copy-friendly result card, and a tasteful “Made with ❤️ in Cape Town” footer.
+- 🪐 **Branded invalid-link page**: expired, removed, missing, or malformed public short URLs render a helpful HTML page instead of plain `Not found` text.
+- 🏡 **Self-hosting prompt**: the homepage footer invites visitors to self-host their own zer0 and links to the source code at <https://github.com/neoemit/zer0>.
 - 📊 **Admin stats**: total clicks plus country buckets from local GeoIP lookup.
 - 🧭 **Admin dashboard**: token-based login, local token persistence, pagination, country names/flags, refresh, logout, per-link deletion, and accessible status updates.
 - 🧹 **Cleanup controls**: delete one link or all links; deletion removes metadata, stats, and hot-cache entries so slugs can be reused with fresh counters.
@@ -41,6 +44,7 @@ Then open `http://localhost:3000` or your configured `PUBLIC_BASE_URL`.
 Useful endpoints:
 
 - 🌐 Homepage: `/`
+- 🎨 Favicon: `/favicon.svg`
 - 🩺 Health check: `/healthz`
 - 🔐 Admin dashboard: `/admin` when `ADMIN_TOKEN` is configured
 
@@ -96,7 +100,19 @@ Response:
 curl -i http://localhost:3000/abc123
 ```
 
-Returns `302 Location: <target-url>` when the slug exists.
+Returns `302 Location: <target-url>` when the slug exists. If the short URL is expired, removed, malformed, or missing, zer0 returns a branded invalid-link page explaining that the URL is no longer valid and asking the visitor to request a fresh link from the person who shared it.
+
+## 🏡 Public homepage and self-hosting footer
+
+The public homepage is intentionally lightweight and friendly:
+
+- a URL creation form with optional custom slug input and a custom slug generator;
+- a copy-friendly result card that explains the link retention window;
+- a stylised zero favicon served from `/favicon.svg`;
+- a footer that says “Made with ❤️ in Cape Town”;
+- a self-hosting note linking to the source code: <https://github.com/neoemit/zer0>.
+
+Self-host your own zer0 by forking or cloning the repository, configuring `.env`, and running Docker Compose from the quick-start commands above.
 
 ## 🔐 Admin API and dashboard
 

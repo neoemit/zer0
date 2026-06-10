@@ -15,6 +15,12 @@ test('normalizes http and https target URLs', () => {
   assert.equal(normalizeTargetUrl('  http://example.com  '), 'http://example.com/');
 });
 
+test('preserves URL fragments because some target apps encode required state there', () => {
+  const openWebRxUrl = 'https://openwebrx.gadgeteerza.co.za/#freq=145700000,mod=nfm,sql=-150';
+
+  assert.equal(normalizeTargetUrl(openWebRxUrl), openWebRxUrl);
+});
+
 test('rejects URLs that are dangerous or invalid for redirectors', () => {
   for (const input of [
     '',

@@ -79,6 +79,31 @@ test('shorten API creates an entry when CAPTCHA is disabled for local tests', as
   await app.close();
 });
 
+test('shorten API stores and redirects to target URLs with fragments', async () => {
+  const store = new MemoryStore();
+  const app = await buildApp({
+    store,
+    publicBaseUrl: 'http://sho.rt',
+    captcha: { provider: 'none' },
+  });
+  const targetUrl = 'https://openwebrx.gadgeteerza.co.za/#freq=145700000,mod=nfm,sql=-150';
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/shorten',
+    payload: { url: targetUrl, slug: 'openrx' },
+  });
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(JSON.parse(response.body).targetUrl, targetUrl);
+  assert.equal(await store.get('openrx'), targetUrl);
+
+  const redirect = await app.inject({ method: 'GET', url: '/openrx' });
+  assert.equal(redirect.statusCode, 302);
+  assert.equal(redirect.headers.location, targetUrl);
+  await app.close();
+});
+
 test('shorten API generates a usable slug when none is provided', async () => {
   const store = new MemoryStore();
   const app = await buildApp({

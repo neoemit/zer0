@@ -26,7 +26,6 @@ export function normalizeTargetUrl(input) {
     throw new Error('That host is not allowed');
   }
 
-  parsed.hash = '';
   return parsed.toString();
 }
 

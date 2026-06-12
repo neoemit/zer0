@@ -2,6 +2,7 @@ import Redis from 'ioredis';
 
 const DEFAULT_RETENTION_SECONDS = 0;
 const CODE_INDEX_KEY = 'idx:codes';
+const SECONDS_PER_DAY = 24 * 60 * 60;
 
 export class RedisStore {
   constructor(redis) {
@@ -20,17 +21,19 @@ export class RedisStore {
     return this.redis.get(urlKey(code));
   }
 
-  async set(code, url, ttlSeconds = DEFAULT_RETENTION_SECONDS) {
-    const ttl = normalizeTtlSeconds(ttlSeconds);
+  async set(code, url, options = DEFAULT_RETENTION_SECONDS) {
+    const { ttl, validityDays, expiresAt } = normalizeSetOptions(options);
     const result = ttl > 0
       ? await this.redis.set(urlKey(code), url, 'EX', ttl, 'NX')
       : await this.redis.set(urlKey(code), url, 'NX');
     if (result !== 'OK') return false;
 
     const createdAt = new Date().toISOString();
+    const metadata = { code, targetUrl: url, createdAt, validityDays };
+    if (expiresAt) metadata.expiresAt = expiresAt;
     const pipeline = this.redis.pipeline()
       .sadd(CODE_INDEX_KEY, code)
-      .hset(metaKey(code), { code, targetUrl: url, createdAt });
+      .hset(metaKey(code), metadata);
     if (ttl > 0) pipeline.expire(metaKey(code), ttl);
     await pipeline.exec();
     return true;
@@ -73,24 +76,66 @@ export class RedisStore {
 
     const links = [];
     for (const code of [...codes].sort((left, right) => left.localeCompare(right))) {
-      const [targetUrl, metadata, stats] = await Promise.all([
+      const [targetUrl, metadata, stats, ttl] = await Promise.all([
         this.redis.get(urlKey(code)),
         this.redis.hgetall(metaKey(code)),
         this.getStats(code),
+        this.redis.ttl(urlKey(code)),
       ]);
       if (!targetUrl) {
         await this.redis.srem(CODE_INDEX_KEY, code);
         continue;
       }
-      links.push({
+      links.push(buildLink({
         code,
         targetUrl: metadata.targetUrl || targetUrl,
-        ...(metadata.createdAt ? { createdAt: metadata.createdAt } : {}),
+        metadata,
         stats,
-      });
+        ttl,
+      }));
     }
 
     return links;
+  }
+
+  async updateValidity(code, validityDays) {
+    const targetUrl = await this.redis.get(urlKey(code));
+    if (!targetUrl) return null;
+
+    const normalizedDays = normalizeValidityDays(validityDays);
+    const ttl = normalizedDays > 0 ? normalizedDays * SECONDS_PER_DAY : 0;
+    const expiresAt = ttl > 0 ? new Date(Date.now() + ttl * 1000).toISOString() : null;
+    const metadata = { code, targetUrl, validityDays: normalizedDays };
+    if (expiresAt) metadata.expiresAt = expiresAt;
+
+    const pipeline = this.redis.pipeline()
+      .hset(metaKey(code), metadata);
+    if (ttl > 0) {
+      pipeline
+        .expire(urlKey(code), ttl)
+        .expire(metaKey(code), ttl)
+        .expire(statsKey(code), ttl);
+    } else {
+      pipeline
+        .persist(urlKey(code))
+        .persist(metaKey(code))
+        .persist(statsKey(code))
+        .hdel(metaKey(code), 'expiresAt');
+    }
+    await pipeline.exec();
+
+    const [metadataAfter, stats, remainingTtl] = await Promise.all([
+      this.redis.hgetall(metaKey(code)),
+      this.getStats(code),
+      this.redis.ttl(urlKey(code)),
+    ]);
+    return buildLink({
+      code,
+      targetUrl,
+      metadata: metadataAfter,
+      stats,
+      ttl: remainingTtl,
+    });
   }
 
   async delete(code) {
@@ -127,9 +172,64 @@ export class RedisStore {
   }
 }
 
+function buildLink({ code, targetUrl, metadata = {}, stats, ttl }) {
+  const expiry = deriveExpiry(metadata, ttl);
+  return {
+    code,
+    targetUrl: metadata.targetUrl || targetUrl,
+    ...(metadata.createdAt ? { createdAt: metadata.createdAt } : {}),
+    validityDays: expiry.validityDays,
+    expiresAt: expiry.expiresAt,
+    expiresInDays: expiry.expiresInDays,
+    stats,
+  };
+}
+
+function deriveExpiry(metadata, ttl) {
+  const remainingTtl = normalizeTtlSeconds(ttl);
+  if (remainingTtl > 0) {
+    return {
+      validityDays: normalizeValidityDays(metadata.validityDays) || Math.ceil(remainingTtl / SECONDS_PER_DAY),
+      expiresAt: metadata.expiresAt || new Date(Date.now() + remainingTtl * 1000).toISOString(),
+      expiresInDays: Math.ceil(remainingTtl / SECONDS_PER_DAY),
+    };
+  }
+
+  return {
+    validityDays: normalizeValidityDays(metadata.validityDays),
+    expiresAt: null,
+    expiresInDays: null,
+  };
+}
+
+function normalizeSetOptions(options = DEFAULT_RETENTION_SECONDS) {
+  if (options && typeof options === 'object') {
+    const ttl = normalizeTtlSeconds(options.ttlSeconds);
+    return {
+      ttl,
+      validityDays: normalizeValidityDays(options.validityDays ?? (ttl > 0 ? Math.ceil(ttl / SECONDS_PER_DAY) : 0)),
+      expiresAt: ttl > 0 ? new Date(Date.now() + ttl * 1000).toISOString() : null,
+    };
+  }
+
+  const ttl = normalizeTtlSeconds(options);
+  return {
+    ttl,
+    validityDays: ttl > 0 ? Math.ceil(ttl / SECONDS_PER_DAY) : 0,
+    expiresAt: ttl > 0 ? new Date(Date.now() + ttl * 1000).toISOString() : null,
+  };
+}
+
 function normalizeTtlSeconds(ttlSeconds) {
   const ttl = Math.floor(Number(ttlSeconds) || DEFAULT_RETENTION_SECONDS);
   return ttl > 0 ? ttl : 0;
+}
+
+function normalizeValidityDays(value) {
+  if (value === undefined || value === null || value === '') return 0;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.floor(parsed);
 }
 
 function normalizeCountry(country) {

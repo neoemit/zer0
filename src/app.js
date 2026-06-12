@@ -19,8 +19,7 @@ export async function buildApp(opts) {
   const cache = opts.cache ?? new HotCache(opts.hotCache);
   const publicBaseUrl = String(opts.publicBaseUrl || 'http://localhost:3000').replace(/\/+$/, '');
   const codeLength = opts.codeLength || 7;
-  const retentionDays = normalizeRetentionDays(opts.retentionDays);
-  const retentionSeconds = retentionDays > 0 ? retentionDays * SECONDS_PER_DAY : 0;
+  const retentionDays = normalizeValidityDays(opts.retentionDays);
   const redirectCacheControl = opts.redirectCacheControl || 'public, max-age=300';
   const captcha = opts.captcha || { provider: 'none' };
   const adminToken = opts.adminToken || '';
@@ -64,21 +63,24 @@ export async function buildApp(opts) {
 
     let targetUrl;
     let requestedSlug;
+    let validityDays;
     try {
       targetUrl = normalizeTargetUrl(body.url);
       requestedSlug = body.slug ? validateCustomSlug(body.slug) : '';
+      validityDays = normalizeValidityDays(body.validityDays ?? retentionDays);
     } catch (error) {
       return reply.code(400).send({ error: error.message });
     }
 
-    const code = requestedSlug || (await allocateCode(store, targetUrl, codeLength, retentionSeconds));
+    const setOptions = { ttlSeconds: validityDaysToSeconds(validityDays), validityDays };
+    const code = requestedSlug || (await allocateCode(store, targetUrl, codeLength, setOptions));
     if (requestedSlug) {
-      const created = await store.set(code, targetUrl, retentionSeconds);
+      const created = await store.set(code, targetUrl, setOptions);
       if (!created) return reply.code(409).send({ error: 'Slug already exists' });
     }
     cache.set(code, targetUrl);
 
-    return reply.code(201).send({ code, shortUrl: `${publicBaseUrl}/${code}`, targetUrl, expiresInDays: retentionDays > 0 ? retentionDays : null });
+    return reply.code(201).send({ code, shortUrl: `${publicBaseUrl}/${code}`, targetUrl, expiresInDays: validityDays > 0 ? validityDays : null });
   });
 
   app.get('/api/stats/:code', async (request, reply) => {
@@ -99,15 +101,24 @@ export async function buildApp(opts) {
     if (!authorizeAdmin(request, reply, adminToken)) return reply;
     const links = await store.listLinks();
     return {
-      links: links.map(({ code, targetUrl, createdAt, stats }) => ({
-        code,
-        shortUrl: `${publicBaseUrl}/${code}`,
-        targetUrl,
-        ...(createdAt ? { createdAt } : {}),
-        totalClicks: stats?.totalClicks ?? 0,
-        countries: stats?.countries ?? {},
-      })),
+      links: links.map((link) => serializeAdminLink(link, publicBaseUrl)),
     };
+  });
+
+  app.patch('/api/admin/links/:code', async (request, reply) => {
+    if (!authorizeAdmin(request, reply, adminToken)) return reply;
+    let code;
+    try {
+      code = validateCustomSlug(request.params.code);
+    } catch {
+      return reply.code(404).send({ error: 'Not found' });
+    }
+
+    const validityDays = normalizeValidityDays((request.body || {}).validityDays);
+    const updated = await store.updateValidity(code, validityDays);
+    if (!updated) return reply.code(404).send({ error: 'Not found' });
+    cache.delete(code);
+    return serializeAdminLink(updated, publicBaseUrl);
   });
 
   app.delete('/api/admin/links/:code', async (request, reply) => {
@@ -175,17 +186,35 @@ function authorizeAdmin(request, reply, adminToken, options = {}) {
   return true;
 }
 
-function normalizeRetentionDays(value) {
+function normalizeValidityDays(value) {
   if (value === undefined || value === null || value === '') return 0;
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) return 0;
   return Math.floor(parsed);
 }
 
-async function allocateCode(store, targetUrl, codeLength, retentionSeconds) {
+function validityDaysToSeconds(validityDays) {
+  return validityDays > 0 ? validityDays * SECONDS_PER_DAY : 0;
+}
+
+function serializeAdminLink({ code, targetUrl, createdAt, validityDays, expiresAt, expiresInDays, stats }, publicBaseUrl) {
+  return {
+    code,
+    shortUrl: `${publicBaseUrl}/${code}`,
+    targetUrl,
+    ...(createdAt ? { createdAt } : {}),
+    validityDays: normalizeValidityDays(validityDays),
+    expiresAt: expiresAt || null,
+    expiresInDays: expiresInDays ?? null,
+    totalClicks: stats?.totalClicks ?? 0,
+    countries: stats?.countries ?? {},
+  };
+}
+
+async function allocateCode(store, targetUrl, codeLength, setOptions) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const code = makeCode(codeLength);
-    if (await store.set(code, targetUrl, retentionSeconds)) return code;
+    if (await store.set(code, targetUrl, setOptions)) return code;
   }
   throw new Error('Could not allocate a unique short code');
 }
@@ -252,7 +281,7 @@ function renderHome({ siteKey, captchaEnabled, retentionDays, adminOnlyMode }) {
     <main>
       <h1>zer0</h1>
       <p class="muted subtitle">Fast, self-hosted URL shortener.</p>
-      <p class="retention-note">${retentionDays > 0 ? `Links are retained for up to ${retentionDays} days, then automatically expire.` : 'Links are retained until an admin removes them.'}</p>
+      <p class="retention-note">${retentionDays > 0 ? `Default link validity is ${retentionDays} days. Change it below or enter 0 for an indefinite link.` : 'Default link validity is indefinite. Enter a positive number below to expire a link automatically.'}</p>
       ${adminOnlyMode ? `<section id="creation-auth" class="admin-gate" aria-labelledby="creation-auth-title">
         <h2 id="creation-auth-title">Admin-only mode</h2>
         <p class="muted">Only visitors with the admin token can create short URLs on this zer0 instance. Redirects stay public.</p>
@@ -276,6 +305,9 @@ function renderHome({ siteKey, captchaEnabled, retentionDays, adminOnlyMode }) {
             <button type="button" id="generate-slug" class="secondary-button" aria-label="Generate a random custom slug">Generate</button>
           </div>
           <p id="slug-help" class="muted">Use 3–48 letters, numbers, underscores, or dashes. Or generate a friendly random one.</p>
+          <label for="validity-days">Validity in days</label>
+          <input id="validity-days" name="validityDays" type="number" min="0" step="1" inputmode="numeric" value="${retentionDays}" aria-describedby="validity-help">
+          <p id="validity-help" class="muted">Use 0 to keep this link valid indefinitely.</p>
           <div class="captcha-wrap">
             ${captchaEnabled ? `<div class="cf-turnstile" data-sitekey="${escapeHtml(siteKey)}"></div>` : '<p class="muted">CAPTCHA is disabled until TURNSTILE_SECRET_KEY is configured.</p>'}
           </div>
@@ -407,7 +439,7 @@ function renderHome({ siteKey, captchaEnabled, retentionDays, adminOnlyMode }) {
         if (window.turnstile) turnstile.reset();
         return;
       }
-      const expiresCopy = data.expiresInDays === null ? 'This link is retained until an admin removes it.' : 'This link expires in ' + data.expiresInDays + ' days.';
+      const expiresCopy = data.expiresInDays === null ? 'This link is valid indefinitely.' : 'This link expires in ' + data.expiresInDays + ' days.';
       result.innerHTML = '<p class="result-label">Your short URL is ready</p>'
         + '<div class="result-row"><a class="short-url" href="' + data.shortUrl + '">' + data.shortUrl + '</a>'
         + '<button type="button" class="copy-short-url">Copy</button></div>'
@@ -543,11 +575,16 @@ function renderAdmin() {
     .code { font-size: 1.15rem; font-weight: 900; color: var(--good); }
     .clicks { color: #fff; }
     .target { display: block; margin-top: .6rem; overflow-wrap: anywhere; }
+    .validity-status { margin: .7rem 0 0; color: #d7d7e4; }
+    .validity-form { margin-top: .85rem; }
+    .validity-form label { margin-top: 0; }
+    .validity-edit { display: grid; grid-template-columns: minmax(7rem, 11rem) auto; gap: .5rem; align-items: center; max-width: 28rem; }
+    .validity-help { margin: .45rem 0 0; font-size: .92rem; }
     .stats { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .85rem; }
     .country { padding: .35rem .6rem; border: 1px solid #29364a; border-radius: 999px; background: #101925; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     [hidden] { display: none !important; }
-    @media (max-width: 640px) { .token-row { grid-template-columns: 1fr; } .page-size { grid-template-columns: 1fr; } }
+    @media (max-width: 640px) { .token-row, .validity-edit { grid-template-columns: 1fr; } .page-size { grid-template-columns: 1fr; } .validity-edit button { width: 100%; } }
   </style>
 </head>
 <body>
@@ -599,6 +636,7 @@ function renderAdmin() {
     let page = 1;
     let pageSize = Number(pageSizeSelect.value) || 25;
     let currentToken = '';
+    const millisecondsPerDay = 24 * 60 * 60 * 1000;
 
     const countryNames = {
       ZA: 'South Africa', US: 'United States', GB: 'United Kingdom', IT: 'Italy', DE: 'Germany', FR: 'France', ES: 'Spain', NL: 'Netherlands', AU: 'Australia', CA: 'Canada', BR: 'Brazil', IN: 'India', JP: 'Japan', CN: 'China', RU: 'Russia', ZZ: 'Unknown'
@@ -637,6 +675,14 @@ function renderAdmin() {
       const button = event.target.closest('.delete-link');
       if (!button) return;
       await deleteLink(button.dataset.code);
+    });
+
+    results.addEventListener('submit', async (event) => {
+      const validityForm = event.target.closest('.validity-form');
+      if (!validityForm) return;
+      event.preventDefault();
+      const formData = new FormData(validityForm);
+      await saveValidity(validityForm.dataset.code, formData.get('validityDays'));
     });
 
     const savedToken = localStorage.getItem('zer0:adminToken');
@@ -707,6 +753,36 @@ function renderAdmin() {
       renderPage({ updateStatus: false });
     }
 
+    async function saveValidity(code, validityDaysValue) {
+      if (!code) return;
+      const validityDays = normalizeDays(validityDaysValue);
+      status.className = 'status muted';
+      status.textContent = 'Saving validity for /' + code + '…';
+      results.setAttribute('aria-busy', 'true');
+      const response = await fetch('/api/admin/links/' + encodeURIComponent(code), {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json', 'X-Admin-Token': currentToken },
+        body: JSON.stringify({ validityDays }),
+      });
+      const data = await response.json().catch(() => ({}));
+      results.setAttribute('aria-busy', 'false');
+      if (!response.ok) {
+        if (response.status === 401) {
+          localStorage.removeItem('zer0:adminToken');
+          setAuthenticated(false);
+        }
+        status.className = 'status error';
+        status.textContent = data.error || 'Failed to save validity for /' + code;
+        return;
+      }
+
+      const index = links.findIndex((link) => link.code === code);
+      if (index >= 0) links[index] = data;
+      status.className = 'status muted';
+      status.textContent = validityDays === 0 ? '/' + code + ' is now valid indefinitely.' : '/' + code + ' is valid for ' + validityDays + ' days from now.';
+      renderPage({ updateStatus: false });
+    }
+
     function renderPage({ updateStatus = true } = {}) {
       const totalClicks = links.reduce((sum, link) => sum + (Number(link.totalClicks) || 0), 0);
       const pageCount = Math.max(1, Math.ceil(links.length / pageSize));
@@ -734,12 +810,17 @@ function renderAdmin() {
         const countryHtml = countries.length
           ? countries.map(([country, count]) => '<span class="country">' + escapeClient(formatCountry(country)) + ': ' + Number(count) + '</span>').join('')
           : '<span class="muted">No clicks yet</span>';
+        const validityInputId = 'validity-days-' + link.code;
+        const validityHelpId = 'validity-help-' + link.code;
+        const validityValue = normalizeDays(link.validityDays);
         const card = document.createElement('article');
         card.className = 'card';
         card.innerHTML = '<div class="card-head"><div><span class="code">/' + escapeClient(link.code) + '</span></div><div class="card-actions"><strong class="clicks">Total clicks: ' + Number(link.totalClicks || 0) + '</strong><button type="button" class="delete-link danger-button" data-code="' + escapeAttr(link.code) + '">Delete</button></div></div>'
           + '<a class="target" href="' + escapeAttr(link.shortUrl) + '">' + escapeClient(link.shortUrl) + '</a>'
           + '<a class="target muted" href="' + escapeAttr(link.targetUrl) + '">' + escapeClient(link.targetUrl) + '</a>'
           + (link.createdAt ? '<p class="muted">Created: ' + escapeClient(link.createdAt) + '</p>' : '')
+          + '<p class="validity-status">' + escapeClient(validitySummary(link)) + '</p>'
+          + '<form class="validity-form" data-code="' + escapeAttr(link.code) + '"><label for="' + escapeAttr(validityInputId) + '">Validity days</label><div class="validity-edit"><input id="' + escapeAttr(validityInputId) + '" name="validityDays" type="number" min="0" step="1" inputmode="numeric" value="' + validityValue + '" aria-describedby="' + escapeAttr(validityHelpId) + '"><button type="submit" class="secondary-button save-validity">Save</button></div><p id="' + escapeAttr(validityHelpId) + '" class="muted validity-help">0 keeps this link valid indefinitely. Positive values start from save time.</p></form>'
           + '<div class="stats" aria-label="Country click counters">' + countryHtml + '</div>';
         cards.append(card);
       }
@@ -773,6 +854,23 @@ function renderAdmin() {
       const code = String(country || 'ZZ').trim().toUpperCase();
       if (code === 'ZZ') return '🏴‍☠️ Unknown (ZZ)';
       return flagEmoji(code) + ' ' + countryName(code) + ' (' + code + ')';
+    }
+
+    function validitySummary(link) {
+      const expiresAt = link.expiresAt ? new Date(link.expiresAt) : null;
+      if (!expiresAt || Number.isNaN(expiresAt.valueOf())) return 'Valid indefinitely.';
+      const remainingDays = Number.isFinite(Number(link.expiresInDays))
+        ? Math.max(0, Math.ceil(Number(link.expiresInDays)))
+        : Math.max(0, Math.ceil((expiresAt.getTime() - Date.now()) / millisecondsPerDay));
+      const dayCopy = remainingDays === 1 ? '1 day remaining' : remainingDays + ' days remaining';
+      return 'Expires at ' + link.expiresAt + ' (' + dayCopy + ').';
+    }
+
+    function normalizeDays(value) {
+      if (value === undefined || value === null || value === '') return 0;
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 0) return 0;
+      return Math.floor(parsed);
     }
 
     function countryName(code) {

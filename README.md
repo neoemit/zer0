@@ -16,12 +16,12 @@ A tiny, fast, self-hosted URL shortener built for Docker Compose. zer0 keeps the
 - 🛡️ **Cloudflare Turnstile on creation only**: redirects never pay the CAPTCHA cost.
 - 🔒 **Admin-only creation mode**: set `ADMIN_ONLY_MODE=true` so only visitors with the admin token can create short URLs while redirects stay public.
 - 🗄️ **Redis persistence**: Docker Compose uses Redis 7 with AOF enabled.
-- ⏳ **Configurable retention**: keep links forever or apply Redis TTLs to links, metadata, and stats.
+- ⏳ **User-selected validity**: pre-fill link validity from configuration, then let creators choose finite or indefinite validity per link.
 - 🎨 **Polished public UI**: the homepage includes a stylised zero favicon, copy-friendly result card, and a tasteful “Made with ❤️ in Cape Town” footer.
 - 🪐 **Branded invalid-link page**: expired, removed, missing, or malformed public short URLs render a helpful HTML page instead of plain `Not found` text.
 - 🏡 **Self-hosting prompt**: the homepage footer invites visitors to self-host their own zer0 and links to the source code at <https://github.com/neoemit/zer0>.
 - 📊 **Admin stats**: total clicks plus country buckets from local GeoIP lookup.
-- 🧭 **Admin dashboard**: token-based login, local token persistence, pagination, country names/flags, refresh, logout, per-link deletion, and accessible status updates.
+- 🧭 **Admin dashboard**: token-based login, local token persistence, pagination, country names/flags, refresh, logout, per-link validity editing, deletion, and accessible status updates.
 - 🧹 **Cleanup controls**: delete one link or all links; deletion removes metadata, stats, and hot-cache entries so slugs can be reused with fresh counters.
 
 ## 🧱 Stack
@@ -57,7 +57,7 @@ Useful endpoints:
 - `CAPTCHA_PROVIDER`: `turnstile` or `none`. Defaults to `turnstile` when a Turnstile secret exists, otherwise `none`.
 - `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`: Cloudflare Turnstile keys for creation CAPTCHA.
 - `CODE_LENGTH`: generated short-code length. Default `7` gives about 3.5 trillion possible base62 codes.
-- `RETENTION_DAYS`: link retention in days. `0` or unset means unlimited retention; positive values become Redis TTLs for links, metadata, and stats.
+- `RETENTION_DAYS`: default validity in days used to pre-fill the creation form and default API requests. `0` or unset means indefinite by default; users can still choose a different value per link.
 - `ADMIN_TOKEN`: enables admin-only stats/list/delete APIs and the `/admin` dashboard. Leave unset to disable the admin API.
 - `ADMIN_ONLY_MODE`: set to `true` to require the admin token before visitors can access the homepage creator or call `POST /api/shorten`. Redirects stay public.
 - `HOT_CACHE_MAX_ENTRIES`: max in-process redirect cache entries.
@@ -80,7 +80,7 @@ CAPTCHA_PROVIDER=none
 ```bash
 curl -X POST http://localhost:3000/api/shorten \
   -H 'content-type: application/json' \
-  -d '{"url":"https://example.com","slug":"optional-custom-slug","captchaToken":"TURNSTILE_TOKEN"}'
+  -d '{"url":"https://example.com","slug":"optional-custom-slug","validityDays":30,"captchaToken":"TURNSTILE_TOKEN"}'
 ```
 
 When `ADMIN_ONLY_MODE=true`, creation also requires the admin token:
@@ -89,7 +89,7 @@ When `ADMIN_ONLY_MODE=true`, creation also requires the admin token:
 curl -X POST http://localhost:3000/api/shorten \
   -H 'content-type: application/json' \
   -H 'X-Admin-Token: $ADMIN_TOKEN' \
-  -d '{"url":"https://example.com","slug":"optional-custom-slug","captchaToken":"TURNSTILE_TOKEN"}'
+  -d '{"url":"https://example.com","slug":"optional-custom-slug","validityDays":30,"captchaToken":"TURNSTILE_TOKEN"}'
 ```
 
 Only visitors with the admin token can create short URLs in admin-only mode. Redirects stay public, so every short URL that an admin creates can still be used by anyone.
@@ -101,11 +101,11 @@ Response:
   "code": "abc123",
   "shortUrl": "https://z.example.com/abc123",
   "targetUrl": "https://example.com/",
-  "expiresInDays": null
+  "expiresInDays": 30
 }
 ```
 
-`expiresInDays` is `null` for unlimited retention, otherwise it is the configured positive `RETENTION_DAYS` value.
+`validityDays` is optional. When omitted, zer0 uses the configured `RETENTION_DAYS` default. `0` means the link is valid indefinitely. `expiresInDays` is `null` for indefinite links, otherwise it is the selected positive validity value.
 
 ### Redirect
 
@@ -119,9 +119,9 @@ Returns `302 Location: <target-url>` when the slug exists. If the short URL is e
 
 The public homepage is intentionally lightweight and friendly:
 
-- a URL creation form with optional custom slug input and a custom slug generator;
+- a URL creation form with optional custom slug input, validity-days input, and a custom slug generator;
 - an admin-token gate for the creation form when `ADMIN_ONLY_MODE=true`;
-- a copy-friendly result card that explains the link retention window;
+- a copy-friendly result card that explains the selected link validity;
 - a stylised zero favicon served from `/favicon.svg`;
 - a footer that says “Made with ❤️ in Cape Town”;
 - a self-hosting note linking to the source code: <https://github.com/neoemit/zer0>.
@@ -174,6 +174,9 @@ curl -H 'X-Admin-Token: $ADMIN_TOKEN' \
       "shortUrl": "https://z.example.com/abc123",
       "targetUrl": "https://example.com/",
       "createdAt": "2026-06-08T12:00:00.000Z",
+      "validityDays": 30,
+      "expiresAt": "2026-07-08T12:00:00.000Z",
+      "expiresInDays": 30,
       "totalClicks": 42,
       "countries": {
         "IT": 20,
@@ -183,6 +186,17 @@ curl -H 'X-Admin-Token: $ADMIN_TOKEN' \
     }
   ]
 }
+```
+
+### Edit link validity
+
+Saving a positive value resets expiry from the save time. Saving `0` makes the link valid indefinitely.
+
+```bash
+curl -X PATCH -H 'content-type: application/json' \
+  -H 'X-Admin-Token: $ADMIN_TOKEN' \
+  -d '{"validityDays":0}' \
+  http://localhost:3000/api/admin/links/abc123
 ```
 
 ### Delete links
@@ -207,7 +221,7 @@ The dashboard:
 
 - stores a successfully used token in browser `localStorage` for future visits;
 - hides the token form and shows links only after authentication succeeds;
-- supports refresh, logout, pagination, and per-link delete buttons;
+- supports refresh, logout, pagination, per-link validity edits, and delete buttons;
 - asks for confirmation before deleting a link;
 - displays country stats with flags and full country names;
 - suppresses zero-valued country counters for unclicked links;

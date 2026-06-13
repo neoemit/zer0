@@ -329,7 +329,7 @@ CAPTCHA_PROVIDER=none npm start
 
 Every pull request must include a `## Release notes` section. Use `- No user-facing changes.` when a PR should not appear in release notes. GitHub Actions validates that section on PRs, and `.github/release.yml` configures GitHub’s generated release notes for tagged releases.
 
-The project is currently versioned at `0.1.1`; create future GitHub releases from version tags after merging release-worthy changes.
+The project is currently versioned at `0.2.0`; create future GitHub releases from version tags after merging release-worthy changes.
 
 ## 🏎️ Performance notes
 

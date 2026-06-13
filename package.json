@@ -1,6 +1,6 @@
 {
   "name": "zer0",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A tiny, fast URL shortener service backed by Redis with CAPTCHA-protected creation.",
   "license": "MIT",
   "type": "module",

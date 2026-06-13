@@ -21,7 +21,7 @@ A tiny, fast, self-hosted URL shortener built for Docker Compose. zer0 keeps the
 - 🪐 **Branded invalid-link page**: expired, removed, missing, or malformed public short URLs render a helpful HTML page instead of plain `Not found` text.
 - 🏡 **Self-hosting prompt**: the homepage footer invites visitors to self-host their own zer0 and links to the source code at <https://github.com/neoemit/zer0>.
 - 📊 **Admin stats**: total clicks plus country buckets from local GeoIP lookup.
-- 🧭 **Admin dashboard**: token-based login, local token persistence, pagination, country names/flags, refresh, logout, per-link validity editing, deletion, and accessible status updates.
+- 🧭 **Admin dashboard**: token-based login, local token persistence, pagination, country names/flags, refresh, logout, per-link validity editing, import/export, deletion, and accessible status updates.
 - 🧹 **Cleanup controls**: delete one link or all links; deletion removes metadata, stats, and hot-cache entries so slugs can be reused with fresh counters.
 
 ## 🧱 Stack
@@ -199,6 +199,85 @@ curl -X PATCH -H 'content-type: application/json' \
   http://localhost:3000/api/admin/links/abc123
 ```
 
+### Export links
+
+Export downloads a zer0 JSON backup that can be imported later to restore links with metadata, validity, expiry, total click counts, and country stats.
+
+```bash
+curl -H 'X-Admin-Token: $ADMIN_TOKEN' \
+  http://localhost:3000/api/admin/export
+```
+
+The export response has this shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "app": "zer0",
+  "exportedAt": "2026-06-13T12:00:00.000Z",
+  "links": [
+    {
+      "code": "abc123",
+      "targetUrl": "https://example.com/",
+      "createdAt": "2026-06-08T12:00:00.000Z",
+      "validityDays": 30,
+      "expiresAt": "2026-07-08T12:00:00.000Z",
+      "expiresInDays": 30,
+      "stats": {
+        "totalClicks": 42,
+        "countries": {
+          "IT": 20,
+          "US": 12,
+          "ZZ": 10
+        }
+      }
+    }
+  ]
+}
+```
+
+### Import links
+
+Import is admin-only and non-destructive by default. Existing slugs are skipped, invalid rows are reported, and valid rows continue importing.
+
+```bash
+curl -X POST -H 'content-type: application/json' \
+  -H 'X-Admin-Token: $ADMIN_TOKEN' \
+  -d @zer0-export.json \
+  http://localhost:3000/api/admin/import
+```
+
+For API imports, send either a zer0 export wrapper:
+
+```json
+{
+  "mode": "zer0",
+  "export": {
+    "app": "zer0",
+    "links": []
+  }
+}
+```
+
+Or custom normalized records:
+
+```json
+{
+  "mode": "custom",
+  "records": [
+    {
+      "targetUrl": "https://example.com/",
+      "code": "optional-slug",
+      "validityDays": 0,
+      "totalClicks": 0,
+      "countriesJson": "{\"US\":2}"
+    }
+  ]
+}
+```
+
+Custom CSV imports are available in the admin dashboard. Choose **Custom CSV**, upload a CSV file, map the required target URL column, and optionally map slug, timestamps, validity, expiry, total clicks, and country stats. Missing optional fields use zer0 defaults: generated slug, current creation time, indefinite validity, and zero stats.
+
 ### Delete links
 
 Deletion removes the URL record, metadata, stats, and in-process hot-cache entry. Once deleted, the slug is available again; if recreated, counters start from zero.
@@ -221,7 +300,7 @@ The dashboard:
 
 - stores a successfully used token in browser `localStorage` for future visits;
 - hides the token form and shows links only after authentication succeeds;
-- supports refresh, logout, pagination, per-link validity edits, and delete buttons;
+- supports refresh, logout, pagination, per-link validity edits, zer0 export downloads, zer0 export imports, custom CSV imports, and delete buttons;
 - asks for confirmation before deleting a link;
 - displays country stats with flags and full country names;
 - suppresses zero-valued country counters for unclicked links;
@@ -241,6 +320,12 @@ Local app defaults:
 ```bash
 CAPTCHA_PROVIDER=none npm start
 ```
+
+## Release workflow
+
+Every pull request must include a `## Release notes` section. Use `- No user-facing changes.` when a PR should not appear in release notes. GitHub Actions validates that section on PRs, and `.github/release.yml` configures GitHub’s generated release notes for tagged releases.
+
+The project is currently versioned at `0.1.0`; create the first GitHub release from tag `v0.1.0` after merging the import/export feature.
 
 ## 🏎️ Performance notes
 

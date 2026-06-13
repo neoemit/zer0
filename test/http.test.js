@@ -38,6 +38,47 @@ class MemoryStore {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([code, targetUrl]) => this.linkFor(code, targetUrl));
   }
+  async exportLinks() {
+    return this.listLinks();
+  }
+  async importLinks(records) {
+    const rows = [];
+    for (const record of records) {
+      const row = Number(record.row) || rows.length + 1;
+      if (record.expiresAt && Date.parse(record.expiresAt) <= Date.now()) {
+        rows.push({ row, code: record.code, status: 'expired', reason: 'Link expiry is in the past' });
+        continue;
+      }
+      if (this.map.has(record.code)) {
+        rows.push({ row, code: record.code, status: 'skipped', reason: 'Slug already exists' });
+        continue;
+      }
+      const ttlSeconds = record.expiresAt
+        ? Math.max(0, Math.floor((Date.parse(record.expiresAt) - Date.now()) / 1000))
+        : normalizeDays(record.validityDays) * SECONDS_PER_DAY;
+      const expiresAt = ttlSeconds > 0 ? (record.expiresAt || new Date(Date.now() + ttlSeconds * 1000).toISOString()) : null;
+      this.map.set(record.code, record.targetUrl);
+      this.ttls.set(record.code, ttlSeconds);
+      this.metadata.set(record.code, {
+        createdAt: record.createdAt,
+        validityDays: normalizeDays(record.validityDays || (ttlSeconds > 0 ? Math.ceil(ttlSeconds / SECONDS_PER_DAY) : 0)),
+        expiresAt,
+      });
+      this.stats.set(record.code, {
+        code: record.code,
+        totalClicks: Math.max(0, Math.floor(Number(record.stats?.totalClicks) || 0)),
+        countries: record.stats?.countries || {},
+      });
+      rows.push({ row, code: record.code, status: 'imported' });
+    }
+    return {
+      imported: rows.filter((row) => row.status === 'imported').length,
+      skipped: rows.filter((row) => row.status === 'skipped').length,
+      expired: rows.filter((row) => row.status === 'expired').length,
+      failed: rows.filter((row) => row.status === 'error').length,
+      rows,
+    };
+  }
   async updateValidity(code, validityDays) {
     const targetUrl = this.map.get(code);
     if (!targetUrl) return null;
@@ -72,6 +113,7 @@ class MemoryStore {
     return {
       code,
       targetUrl,
+      ...(metadata.createdAt ? { createdAt: metadata.createdAt } : {}),
       validityDays: normalizeDays(metadata.validityDays ?? (ttlSeconds > 0 ? Math.ceil(ttlSeconds / SECONDS_PER_DAY) : 0)),
       expiresAt: ttlSeconds > 0 ? metadata.expiresAt : null,
       expiresInDays: ttlSeconds > 0 ? Math.ceil(ttlSeconds / SECONDS_PER_DAY) : null,
@@ -365,6 +407,127 @@ test('admin can edit link validity from save time', async () => {
   await app.close();
 });
 
+test('admin can export all links with metadata and stats', async () => {
+  const store = new MemoryStore();
+  await store.set('export1', 'https://example.com/export', { ttlSeconds: 5 * SECONDS_PER_DAY, validityDays: 5 });
+  await store.recordAccess('export1', { country: 'US' });
+  await store.recordAccess('export1', { country: 'IT' });
+  const app = await buildApp({ store, publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
+
+  const unauthorized = await app.inject({ method: 'GET', url: '/api/admin/export' });
+  const response = await app.inject({ method: 'GET', url: '/api/admin/export', headers: { 'x-admin-token': 'secret' } });
+  const body = JSON.parse(response.body);
+
+  assert.equal(unauthorized.statusCode, 401);
+  assert.equal(response.statusCode, 200);
+  assert.match(response.headers['content-disposition'], /zer0-export-/);
+  assert.equal(body.schemaVersion, 1);
+  assert.equal(body.app, 'zer0');
+  assert.equal(body.links.length, 1);
+  assert.equal(body.links[0].code, 'export1');
+  assert.equal(body.links[0].targetUrl, 'https://example.com/export');
+  assert.equal(body.links[0].validityDays, 5);
+  assert.equal(body.links[0].expiresInDays, 5);
+  assert.deepEqual(body.links[0].stats, { totalClicks: 2, countries: { US: 1, IT: 1 } });
+  await app.close();
+});
+
+test('admin can import a zer0 export with metadata and stats', async () => {
+  const store = new MemoryStore();
+  const app = await buildApp({ store, publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
+  const expiresAt = new Date(Date.now() + 12 * SECONDS_PER_DAY * 1000).toISOString();
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/admin/import',
+    headers: { 'x-admin-token': 'secret' },
+    payload: {
+      mode: 'zer0',
+      export: {
+        schemaVersion: 1,
+        app: 'zer0',
+        links: [{
+          code: 'import1',
+          targetUrl: 'https://example.com/import',
+          createdAt: '2026-06-01T12:00:00.000Z',
+          validityDays: 12,
+          expiresAt,
+          stats: { totalClicks: 9, countries: { ZA: 4, US: 5 } },
+        }],
+      },
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(JSON.parse(response.body).imported, 1);
+  assert.equal(await store.get('import1'), 'https://example.com/import');
+  assert.equal(store.ttl('import1') > 0, true);
+  assert.deepEqual(await store.getStats('import1'), { code: 'import1', totalClicks: 9, countries: { ZA: 4, US: 5 } });
+  const listed = await store.listLinks();
+  assert.equal(listed[0].createdAt, '2026-06-01T12:00:00.000Z');
+  assert.equal(listed[0].validityDays, 12);
+  await app.close();
+});
+
+test('custom import applies defaults, skips conflicts, and reports row errors', async () => {
+  const store = new MemoryStore();
+  await store.set('taken', 'https://example.com/existing');
+  const app = await buildApp({ store, publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret', codeLength: 7 });
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/admin/import',
+    headers: { authorization: 'Bearer secret' },
+    payload: {
+      mode: 'custom',
+      records: [
+        { code: 'taken', targetUrl: 'https://example.com/conflict' },
+        { targetUrl: 'https://example.com/generated', totalClicks: '2', countriesJson: '{"US":2}' },
+        { code: 'badurl', targetUrl: 'not a url' },
+      ],
+    },
+  });
+
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.imported, 1);
+  assert.equal(body.skipped, 1);
+  assert.equal(body.failed, 1);
+  assert.equal(await store.get('taken'), 'https://example.com/existing');
+  assert.equal((await store.listLinks()).length, 2);
+  assert.deepEqual(body.rows.map((row) => row.status), ['skipped', 'imported', 'error']);
+  await app.close();
+});
+
+test('import reports expired zer0 records without creating them', async () => {
+  const store = new MemoryStore();
+  const app = await buildApp({ store, publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/admin/import',
+    headers: { 'x-admin-token': 'secret' },
+    payload: {
+      mode: 'zer0',
+      export: {
+        app: 'zer0',
+        links: [{
+          code: 'oldone',
+          targetUrl: 'https://example.com/old',
+          expiresAt: '2020-01-01T00:00:00.000Z',
+        }],
+      },
+    },
+  });
+
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.imported, 0);
+  assert.equal(body.expired, 1);
+  assert.equal(await store.get('oldone'), null);
+  await app.close();
+});
+
 test('admin can make an existing link valid indefinitely', async () => {
   const store = new MemoryStore();
   await store.set('forever2', 'https://example.com/forever', { ttlSeconds: 9 * SECONDS_PER_DAY, validityDays: 9 });
@@ -481,6 +644,24 @@ test('admin page supports editing per-link validity', async () => {
   assert.match(response.body, /validitySummary/);
   assert.match(response.body, /0 keeps this link valid indefinitely/);
   assert.match(response.body, /Positive values start from save time/);
+  await app.close();
+});
+
+test('admin page exposes import and export controls', async () => {
+  const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
+
+  const response = await app.inject({ method: 'GET', url: '/admin' });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(response.body, /id="export-data"/);
+  assert.match(response.body, /id="toggle-import"/);
+  assert.match(response.body, /id="import-mode"/);
+  assert.match(response.body, /zer0 export/);
+  assert.match(response.body, /Custom CSV/);
+  assert.match(response.body, /parseCsv/);
+  assert.match(response.body, /\/api\/admin\/export/);
+  assert.match(response.body, /\/api\/admin\/import/);
+  assert.match(response.body, /Existing slugs will be skipped/);
   await app.close();
 });
 
@@ -689,6 +870,31 @@ test('docs and examples document ADMIN_ONLY_MODE creation gating', async () => {
   assert.match(readme, /Redirects stay public/i);
   assert.match(envExample, /ADMIN_ONLY_MODE=false/);
   assert.match(compose, /ADMIN_ONLY_MODE: \$\{ADMIN_ONLY_MODE:-false\}/);
+});
+
+test('docs and GitHub files define automated PR release notes', async () => {
+  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+  const template = await readFile(new URL('../.github/PULL_REQUEST_TEMPLATE.md', import.meta.url), 'utf8');
+  const workflow = await readFile(new URL('../.github/workflows/pr-release-notes.yml', import.meta.url), 'utf8');
+  const releaseConfig = await readFile(new URL('../.github/release.yml', import.meta.url), 'utf8');
+
+  assert.match(readme, /release notes/i);
+  assert.match(template, /## Release notes/);
+  assert.match(workflow, /PR release notes/);
+  assert.match(workflow, /GITHUB_EVENT_PATH/);
+  assert.match(releaseConfig, /Breaking Changes/);
+  assert.match(releaseConfig, /Features/);
+  assert.match(releaseConfig, /Other Changes/);
+});
+
+test('README documents admin import and export', async () => {
+  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+
+  assert.match(readme, /\/api\/admin\/export/);
+  assert.match(readme, /\/api\/admin\/import/);
+  assert.match(readme, /Custom CSV/i);
+  assert.match(readme, /Existing slugs are skipped/i);
+  assert.match(readme, /zer0 export/i);
 });
 
 test('custom slug creation rejects slugs that already exist', async () => {

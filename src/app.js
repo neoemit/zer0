@@ -8,6 +8,8 @@ import { verifyCaptcha } from './captcha.js';
 import { geolocateIp as defaultGeolocateIp } from './geoip.js';
 
 const SECONDS_PER_DAY = 24 * 60 * 60;
+const IMPORT_BODY_LIMIT_BYTES = 5 * 1024 * 1024;
+const EXPORT_SCHEMA_VERSION = 1;
 
 export async function buildApp(opts) {
   const app = Fastify({
@@ -103,6 +105,32 @@ export async function buildApp(opts) {
     return {
       links: links.map((link) => serializeAdminLink(link, publicBaseUrl)),
     };
+  });
+
+  app.get('/api/admin/export', async (request, reply) => {
+    if (!authorizeAdmin(request, reply, adminToken)) return reply;
+    const links = typeof store.exportLinks === 'function' ? await store.exportLinks() : await store.listLinks();
+    return reply
+      .header('content-disposition', `attachment; filename="zer0-export-${new Date().toISOString().slice(0, 10)}.json"`)
+      .send({
+        schemaVersion: EXPORT_SCHEMA_VERSION,
+        app: 'zer0',
+        exportedAt: new Date().toISOString(),
+        links: links.map(serializeExportLink),
+      });
+  });
+
+  app.post('/api/admin/import', { bodyLimit: opts.importBodyLimit ?? IMPORT_BODY_LIMIT_BYTES }, async (request, reply) => {
+    if (!authorizeAdmin(request, reply, adminToken)) return reply;
+    const prepared = await prepareImportPayload(request.body || {}, { store, codeLength });
+    if (prepared.records.length === 0 && prepared.rows.length === 0) {
+      return reply.code(400).send({ error: 'No import records found' });
+    }
+
+    const imported = await store.importLinks(prepared.records);
+    const result = summarizeImportRows([...prepared.rows, ...imported.rows]);
+    if (result.imported > 0) cache.clear();
+    return result;
   });
 
   app.patch('/api/admin/links/:code', async (request, reply) => {
@@ -211,12 +239,149 @@ function serializeAdminLink({ code, targetUrl, createdAt, validityDays, expiresA
   };
 }
 
+function serializeExportLink({ code, targetUrl, createdAt, validityDays, expiresAt, expiresInDays, stats }) {
+  return {
+    code,
+    targetUrl,
+    ...(createdAt ? { createdAt } : {}),
+    validityDays: normalizeValidityDays(validityDays),
+    expiresAt: expiresAt || null,
+    expiresInDays: expiresInDays ?? null,
+    stats: {
+      totalClicks: stats?.totalClicks ?? 0,
+      countries: stats?.countries ?? {},
+    },
+  };
+}
+
 async function allocateCode(store, targetUrl, codeLength, setOptions) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const code = makeCode(codeLength);
     if (await store.set(code, targetUrl, setOptions)) return code;
   }
   throw new Error('Could not allocate a unique short code');
+}
+
+async function prepareImportPayload(body, { store, codeLength }) {
+  const rawRecords = extractImportRecords(body);
+  const records = [];
+  const rows = [];
+  const generatedCodes = new Set();
+
+  for (const [index, rawRecord] of rawRecords.entries()) {
+    const row = index + 1;
+    try {
+      records.push(await normalizeImportRecord(rawRecord, { row, store, codeLength, generatedCodes }));
+    } catch (error) {
+      rows.push({ row, status: 'error', reason: error.message });
+    }
+  }
+
+  return { records, rows };
+}
+
+function extractImportRecords(body) {
+  const mode = String(body.mode || body.format || '').trim().toLowerCase();
+  if (mode === 'zer0') {
+    return arrayOrEmpty((body.export || body.data || body).links);
+  }
+  if (mode === 'custom') {
+    return arrayOrEmpty(body.records);
+  }
+
+  if (Array.isArray(body.records)) return body.records;
+  if (Array.isArray(body.links)) return body.links;
+  if (body.export && Array.isArray(body.export.links)) return body.export.links;
+  return [];
+}
+
+async function normalizeImportRecord(record, { row, store, codeLength, generatedCodes }) {
+  const targetUrl = normalizeTargetUrl(record.targetUrl ?? record.url ?? record.longUrl ?? record.destinationUrl);
+  const explicitCode = record.code ?? record.slug;
+  const code = explicitCode
+    ? validateCustomSlug(explicitCode)
+    : await generateImportCode(store, codeLength, generatedCodes);
+  const createdAt = normalizeImportDate(record.createdAt, 'createdAt') || new Date().toISOString();
+  const expiresAt = normalizeImportDate(record.expiresAt, 'expiresAt') || null;
+  return {
+    row,
+    code,
+    targetUrl,
+    createdAt,
+    validityDays: normalizeValidityDays(record.validityDays),
+    expiresAt,
+    stats: normalizeImportStats(record),
+  };
+}
+
+async function generateImportCode(store, codeLength, generatedCodes) {
+  for (let attempt = 0; attempt < 64; attempt += 1) {
+    const code = makeCode(codeLength);
+    if (generatedCodes.has(code)) continue;
+    if (await store.get(code)) continue;
+    generatedCodes.add(code);
+    return code;
+  }
+  throw new Error('Could not allocate a unique short code');
+}
+
+function normalizeImportDate(value, fieldName) {
+  if (value === undefined || value === null || value === '') return '';
+  const date = new Date(String(value));
+  if (Number.isNaN(date.valueOf())) throw new Error(`${fieldName} is invalid`);
+  return date.toISOString();
+}
+
+function normalizeImportStats(record) {
+  const stats = record.stats && typeof record.stats === 'object' ? record.stats : {};
+  const countries = normalizeCountryStats(record.countriesJson ?? record.countries ?? stats.countries);
+  const explicitTotal = record.totalClicks ?? stats.totalClicks ?? stats.total;
+  const inferredTotal = Object.values(countries).reduce((sum, count) => sum + count, 0);
+  return {
+    totalClicks: explicitTotal === undefined || explicitTotal === null || explicitTotal === ''
+      ? inferredTotal
+      : Math.max(0, Math.floor(Number(explicitTotal) || 0)),
+    countries,
+  };
+}
+
+function normalizeCountryStats(value) {
+  if (value === undefined || value === null || value === '') return {};
+  let source = value;
+  if (typeof value === 'string') {
+    try {
+      source = JSON.parse(value);
+    } catch {
+      throw new Error('countriesJson must be valid JSON');
+    }
+  }
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new Error('countries must be a JSON object');
+  }
+
+  const countries = {};
+  for (const [country, count] of Object.entries(source)) {
+    const code = String(country || '').trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(code)) throw new Error(`Country code ${country} is invalid`);
+    const normalizedCount = Math.max(0, Math.floor(Number(count) || 0));
+    if (normalizedCount > 0) countries[code] = (countries[code] || 0) + normalizedCount;
+  }
+  return countries;
+}
+
+function summarizeImportRows(rows) {
+  const sortedRows = [...rows].sort((left, right) => Number(left.row) - Number(right.row));
+  return {
+    imported: sortedRows.filter((row) => row.status === 'imported').length,
+    skipped: sortedRows.filter((row) => row.status === 'skipped').length,
+    expired: sortedRows.filter((row) => row.status === 'expired').length,
+    failed: sortedRows.filter((row) => row.status === 'error').length,
+    rows: sortedRows,
+  };
+}
+
+function arrayOrEmpty(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 function renderHome({ siteKey, captchaEnabled, retentionDays, adminOnlyMode }) {
@@ -560,6 +725,12 @@ function renderAdmin() {
     .toolbar-actions { display: flex; flex-wrap: wrap; gap: .65rem; align-items: center; }
     .secondary-button { background: #20202b; color: #f4f4ff; border-color: #363648; }
     .danger-button { background: #3a1820; color: #ffd7df; border-color: #6d2a38; }
+    .import-panel { margin-top: 1rem; padding: 1rem; border: 1px solid #30303b; border-radius: 18px; background: #09090d; }
+    .import-grid { display: grid; grid-template-columns: minmax(9rem, 14rem) minmax(0, 1fr); gap: .75rem; align-items: end; }
+    .import-actions { display: flex; flex-wrap: wrap; gap: .65rem; margin-top: .85rem; }
+    .mapping-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .65rem; margin-top: .85rem; }
+    .preview-table { width: 100%; margin-top: .85rem; border-collapse: collapse; font-size: .9rem; }
+    .preview-table th, .preview-table td { padding: .45rem; border-bottom: 1px solid #252532; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
     .pager { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; justify-content: center; margin-block: .85rem; }
     .page-size { display: grid; grid-template-columns: auto minmax(5rem, 7rem); gap: .5rem; align-items: center; margin: 0; }
     .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; margin: 1rem 0; }
@@ -584,7 +755,7 @@ function renderAdmin() {
     .country { padding: .35rem .6rem; border: 1px solid #29364a; border-radius: 999px; background: #101925; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     [hidden] { display: none !important; }
-    @media (max-width: 640px) { .token-row, .validity-edit { grid-template-columns: 1fr; } .page-size { grid-template-columns: 1fr; } .validity-edit button { width: 100%; } }
+    @media (max-width: 640px) { .token-row, .validity-edit, .import-grid { grid-template-columns: 1fr; } .page-size { grid-template-columns: 1fr; } .validity-edit button, .import-actions button { width: 100%; } }
   </style>
 </head>
 <body>
@@ -613,11 +784,27 @@ function renderAdmin() {
           <h2 id="dashboard-title">Links</h2>
         </div>
         <div class="toolbar-actions">
+          <button type="button" id="export-data" class="secondary-button" hidden>Export</button>
+          <button type="button" id="toggle-import" class="secondary-button" hidden>Import</button>
           <button type="button" id="refresh" class="secondary-button" hidden>Refresh</button>
           <label class="page-size" for="page-size"><span>Items per page</span><select id="page-size"><option>10</option><option selected>25</option><option>50</option><option>100</option></select></label>
         </div>
       </div>
       <p id="status" class="status muted" aria-live="polite"></p>
+      <section id="import-panel" class="import-panel" aria-labelledby="import-title" hidden>
+        <h2 id="import-title">Import links</h2>
+        <div class="import-grid">
+          <label for="import-mode"><span>Import type</span><select id="import-mode"><option value="zer0">zer0 export</option><option value="custom">Custom CSV</option></select></label>
+          <label for="import-file"><span>File</span><input id="import-file" type="file" accept=".json,.csv,application/json,text/csv"></label>
+        </div>
+        <div id="mapping-fields" class="mapping-grid"></div>
+        <div id="import-preview" class="muted"></div>
+        <p id="import-status" class="status muted" aria-live="polite"></p>
+        <div class="import-actions">
+          <button type="button" id="submit-import" disabled>Import</button>
+          <button type="button" id="cancel-import" class="secondary-button">Cancel</button>
+        </div>
+      </section>
       <section id="results" aria-busy="false" aria-live="polite"></section>
     </section>
   </main>
@@ -631,16 +818,36 @@ function renderAdmin() {
     const results = document.querySelector('#results');
     const logout = document.querySelector('#logout');
     const refresh = document.querySelector('#refresh');
+    const exportData = document.querySelector('#export-data');
+    const toggleImport = document.querySelector('#toggle-import');
+    const importPanel = document.querySelector('#import-panel');
+    const importMode = document.querySelector('#import-mode');
+    const importFile = document.querySelector('#import-file');
+    const mappingFields = document.querySelector('#mapping-fields');
+    const importPreview = document.querySelector('#import-preview');
+    const importStatus = document.querySelector('#import-status');
+    const submitImport = document.querySelector('#submit-import');
+    const cancelImport = document.querySelector('#cancel-import');
     const pageSizeSelect = document.querySelector('#page-size');
     let links = [];
     let page = 1;
     let pageSize = Number(pageSizeSelect.value) || 25;
     let currentToken = '';
+    let importState = { mode: 'zer0', payload: null, headers: [], rows: [] };
     const millisecondsPerDay = 24 * 60 * 60 * 1000;
 
     const countryNames = {
       ZA: 'South Africa', US: 'United States', GB: 'United Kingdom', IT: 'Italy', DE: 'Germany', FR: 'France', ES: 'Spain', NL: 'Netherlands', AU: 'Australia', CA: 'Canada', BR: 'Brazil', IN: 'India', JP: 'Japan', CN: 'China', RU: 'Russia', ZZ: 'Unknown'
     };
+    const importFields = [
+      { key: 'targetUrl', label: 'Target URL', required: true, aliases: ['targeturl', 'url', 'longurl', 'destination', 'destinationurl'] },
+      { key: 'code', label: 'Slug', aliases: ['code', 'slug', 'shortcode', 'shorturl'] },
+      { key: 'createdAt', label: 'Created at', aliases: ['createdat', 'created', 'createdon'] },
+      { key: 'validityDays', label: 'Validity days', aliases: ['validitydays', 'retentiondays', 'expiresindays'] },
+      { key: 'expiresAt', label: 'Expires at', aliases: ['expiresat', 'expires', 'expiry', 'expiration'] },
+      { key: 'totalClicks', label: 'Total clicks', aliases: ['totalclicks', 'clicks', 'visits'] },
+      { key: 'countriesJson', label: 'Countries JSON', aliases: ['countriesjson', 'countries', 'countrystats'] },
+    ];
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -649,6 +856,32 @@ function renderAdmin() {
 
     refresh.addEventListener('click', async () => {
       if (currentToken) await loadLinks(currentToken, { persistToken: false });
+    });
+
+    exportData.addEventListener('click', async () => {
+      await exportLinks();
+    });
+
+    toggleImport.addEventListener('click', () => {
+      importPanel.hidden = !importPanel.hidden;
+      if (!importPanel.hidden) importFile.focus();
+    });
+
+    cancelImport.addEventListener('click', () => {
+      resetImportPanel();
+      importPanel.hidden = true;
+    });
+
+    importMode.addEventListener('change', () => {
+      resetImportPanel({ keepMode: true });
+    });
+
+    importFile.addEventListener('change', async () => {
+      await readImportFile();
+    });
+
+    submitImport.addEventListener('click', async () => {
+      await submitImportPayload();
     });
 
     logout.addEventListener('click', () => {
@@ -662,6 +895,7 @@ function renderAdmin() {
       status.textContent = 'Logged out. Paste ADMIN_TOKEN to load admin data.';
       results.innerHTML = '';
       results.setAttribute('aria-busy', 'false');
+      resetImportPanel();
       token.focus();
     });
 
@@ -727,7 +961,164 @@ function renderAdmin() {
       dashboardPanel.hidden = !isAuthenticated;
       logout.hidden = !isAuthenticated;
       refresh.hidden = !isAuthenticated;
+      exportData.hidden = !isAuthenticated;
+      toggleImport.hidden = !isAuthenticated;
+      if (!isAuthenticated) importPanel.hidden = true;
       token.required = !isAuthenticated;
+    }
+
+    async function exportLinks() {
+      if (!currentToken) return;
+      status.className = 'status muted';
+      status.textContent = 'Preparing export…';
+      const response = await fetch('/api/admin/export', {
+        headers: { 'X-Admin-Token': currentToken },
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        status.className = 'status error';
+        status.textContent = data.error || 'Failed to export links';
+        return;
+      }
+
+      const blob = await response.blob();
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = exportFilename(response.headers.get('content-disposition'));
+      document.body.append(link);
+      link.click();
+      URL.revokeObjectURL(link.href);
+      link.remove();
+      status.className = 'status muted';
+      status.textContent = 'Export downloaded.';
+    }
+
+    function exportFilename(header) {
+      const match = String(header || '').match(/filename="([^"]+)"/);
+      return match ? match[1] : 'zer0-export.json';
+    }
+
+    async function readImportFile() {
+      const file = importFile.files && importFile.files[0];
+      resetImportPanel({ keepMode: true, keepFile: true });
+      if (!file) return;
+
+      try {
+        const text = await file.text();
+        if (importMode.value === 'zer0') {
+          const parsed = JSON.parse(text);
+          if (!parsed || parsed.app !== 'zer0' || !Array.isArray(parsed.links)) {
+            throw new Error('Choose a valid zer0 export JSON file.');
+          }
+          importState = { mode: 'zer0', payload: { mode: 'zer0', export: parsed }, headers: [], rows: [] };
+          submitImport.disabled = false;
+          importPreview.innerHTML = '<p class="muted">Ready to import ' + parsed.links.length + ' zer0 links. Existing slugs will be skipped.</p>';
+          importStatus.textContent = '';
+          return;
+        }
+
+        const csvRows = parseCsv(text);
+        if (csvRows.length < 2) throw new Error('CSV must include a header row and at least one data row.');
+        const headers = csvRows[0].map((header) => String(header || '').trim());
+        const rows = csvRows.slice(1)
+          .filter((row) => row.some((value) => String(value || '').trim() !== ''))
+          .map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index] || ''])));
+        if (rows.length === 0) throw new Error('CSV has no importable data rows.');
+        importState = { mode: 'custom', payload: null, headers, rows };
+        renderMappingFields();
+        renderCsvPreview();
+        submitImport.disabled = false;
+        importStatus.textContent = '';
+      } catch (error) {
+        submitImport.disabled = true;
+        importStatus.className = 'status error';
+        importStatus.textContent = error.message || 'Failed to read import file';
+      }
+    }
+
+    function renderMappingFields() {
+      mappingFields.innerHTML = importFields.map((field) => {
+        const selected = defaultHeaderFor(field);
+        const options = ['<option value="">Use default</option>']
+          .concat(importState.headers.map((header) => '<option value="' + escapeAttr(header) + '"' + (header === selected ? ' selected' : '') + '>' + escapeClient(header) + '</option>'))
+          .join('');
+        return '<label for="map-' + escapeAttr(field.key) + '">' + escapeClient(field.label) + (field.required ? ' *' : '') + '<select id="map-' + escapeAttr(field.key) + '" data-import-field="' + escapeAttr(field.key) + '">' + options + '</select></label>';
+      }).join('');
+    }
+
+    function defaultHeaderFor(field) {
+      return importState.headers.find((header) => field.aliases.includes(normalizeHeader(header))) || '';
+    }
+
+    function renderCsvPreview() {
+      const previewRows = importState.rows.slice(0, 5);
+      const headerHtml = importState.headers.slice(0, 6).map((header) => '<th>' + escapeClient(header) + '</th>').join('');
+      const bodyHtml = previewRows.map((row) => '<tr>' + importState.headers.slice(0, 6).map((header) => '<td>' + escapeClient(row[header]) + '</td>').join('') + '</tr>').join('');
+      importPreview.innerHTML = '<p class="muted">Mapped CSV preview. Existing slugs will be skipped. Missing optional fields use zer0 defaults.</p><table class="preview-table"><thead><tr>' + headerHtml + '</tr></thead><tbody>' + bodyHtml + '</tbody></table>';
+    }
+
+    async function submitImportPayload() {
+      if (!currentToken || submitImport.disabled) return;
+      let payload = importState.payload;
+      if (importMode.value === 'custom') {
+        const records = buildCustomImportRecords();
+        if (!records) return;
+        payload = { mode: 'custom', records };
+      }
+      if (!payload) return;
+
+      submitImport.disabled = true;
+      importStatus.className = 'status muted';
+      importStatus.textContent = 'Importing…';
+      const response = await fetch('/api/admin/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-Admin-Token': currentToken },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      submitImport.disabled = false;
+      if (!response.ok) {
+        importStatus.className = 'status error';
+        importStatus.textContent = data.error || 'Import failed';
+        return;
+      }
+
+      importStatus.className = data.failed > 0 ? 'status error' : 'status muted';
+      importStatus.textContent = 'Imported ' + data.imported + ', skipped ' + data.skipped + ', expired ' + data.expired + ', failed ' + data.failed + '.';
+      if (data.imported > 0) await loadLinks(currentToken, { persistToken: false });
+    }
+
+    function buildCustomImportRecords() {
+      const mapping = {};
+      for (const field of importFields) {
+        const selected = document.querySelector('[data-import-field="' + field.key + '"]')?.value || '';
+        if (field.required && !selected) {
+          importStatus.className = 'status error';
+          importStatus.textContent = field.label + ' must be mapped before importing.';
+          return null;
+        }
+        mapping[field.key] = selected;
+      }
+
+      return importState.rows.map((row) => {
+        const record = {};
+        for (const field of importFields) {
+          const header = mapping[field.key];
+          if (header && row[header] !== undefined && row[header] !== '') record[field.key] = row[header];
+        }
+        return record;
+      });
+    }
+
+    function resetImportPanel({ keepMode = false, keepFile = false } = {}) {
+      importState = { mode: keepMode ? importMode.value : 'zer0', payload: null, headers: [], rows: [] };
+      if (!keepMode) importMode.value = 'zer0';
+      if (!keepFile) importFile.value = '';
+      mappingFields.innerHTML = '';
+      importPreview.innerHTML = '';
+      importStatus.className = 'status muted';
+      importStatus.textContent = '';
+      submitImport.disabled = true;
     }
 
     async function deleteLink(code) {
@@ -871,6 +1262,49 @@ function renderAdmin() {
       const parsed = Number(value);
       if (!Number.isFinite(parsed) || parsed < 0) return 0;
       return Math.floor(parsed);
+    }
+
+    function parseCsv(text) {
+      const rows = [];
+      let row = [];
+      let value = '';
+      let quoted = false;
+      for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        const next = text[index + 1];
+        if (quoted) {
+          if (char === '"' && next === '"') {
+            value += '"';
+            index += 1;
+          } else if (char === '"') {
+            quoted = false;
+          } else {
+            value += char;
+          }
+          continue;
+        }
+        if (char === '"') {
+          quoted = true;
+        } else if (char === ',') {
+          row.push(value);
+          value = '';
+        } else if (char === '\n') {
+          row.push(value);
+          rows.push(row);
+          row = [];
+          value = '';
+        } else if (char !== '\r') {
+          value += char;
+        }
+      }
+      if (quoted) throw new Error('CSV has an unterminated quoted value.');
+      row.push(value);
+      if (row.some((item) => item !== '') || rows.length === 0) rows.push(row);
+      return rows;
+    }
+
+    function normalizeHeader(value) {
+      return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
     }
 
     function countryName(code) {

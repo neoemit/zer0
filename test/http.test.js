@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { Script } from 'node:vm';
 
 import { buildApp } from '../src/app.js';
 
@@ -561,6 +562,28 @@ test('admin page asks for an admin token and fetches all links', async () => {
   assert.match(response.body, /\/api\/admin\/links/);
   assert.match(response.body, /X-Admin-Token/);
   assert.match(response.body, /Total clicks/);
+  await app.close();
+});
+
+test('admin page inline script is valid JavaScript', async () => {
+  const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
+
+  const response = await app.inject({ method: 'GET', url: '/admin' });
+  const script = response.body.match(/<script>([\s\S]*)<\/script>/)?.[1] || '';
+
+  assert.equal(response.statusCode, 200);
+  assert.ok(script);
+  assert.doesNotThrow(() => new Script(script));
+  await app.close();
+});
+
+test('admin page redirects token query strings away from the URL', async () => {
+  const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
+
+  const response = await app.inject({ method: 'GET', url: '/admin?token=secret' });
+
+  assert.equal(response.statusCode, 303);
+  assert.equal(response.headers.location, '/admin');
   await app.close();
 });
 

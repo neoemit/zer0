@@ -48,7 +48,10 @@ export async function buildApp(opts) {
     return renderHome({ siteKey: captcha.siteKey || '', captchaEnabled: !captchaCanBeSkipped(captcha), retentionDays, adminOnlyMode });
   });
 
-  app.get('/admin', async (_request, reply) => {
+  app.get('/admin', async (request, reply) => {
+    if (request.query && Object.hasOwn(request.query, 'token')) {
+      return reply.redirect('/admin', 303);
+    }
     reply.type('text/html; charset=utf-8');
     return renderAdmin();
   });
@@ -1288,12 +1291,12 @@ function renderAdmin() {
         } else if (char === ',') {
           row.push(value);
           value = '';
-        } else if (char === '\n') {
+        } else if (char === '\\n') {
           row.push(value);
           rows.push(row);
           row = [];
           value = '';
-        } else if (char !== '\r') {
+        } else if (char !== '\\r') {
           value += char;
         }
       }

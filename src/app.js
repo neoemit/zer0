@@ -3,7 +3,7 @@ import formBody from '@fastify/formbody';
 import rateLimit from '@fastify/rate-limit';
 
 import { HotCache } from './cache.js';
-import { captchaCanBeSkipped, makeCode, normalizeTargetUrl, validateCustomSlug } from './core.js';
+import { captchaCanBeSkipped, makeCode, normalizeTargetUrl, sanitizeCustomSlug, validateCustomSlug } from './core.js';
 import { verifyCaptcha } from './captcha.js';
 import { geolocateIp as defaultGeolocateIp } from './geoip.js';
 
@@ -145,10 +145,20 @@ export async function buildApp(opts) {
       return reply.code(404).send({ error: 'Not found' });
     }
 
-    const validityDays = normalizeValidityDays((request.body || {}).validityDays);
-    const updated = await store.updateValidity(code, validityDays);
+    let updates;
+    try {
+      updates = normalizeAdminLinkUpdates(request.body || {});
+    } catch (error) {
+      return reply.code(400).send({ error: error.message });
+    }
+
+    const updated = typeof store.updateLink === 'function'
+      ? await store.updateLink(code, updates)
+      : await store.updateValidity(code, updates.validityDays);
+    if (updated?.conflict) return reply.code(409).send({ error: 'Slug already exists' });
     if (!updated) return reply.code(404).send({ error: 'Not found' });
     cache.delete(code);
+    if (updated.code && updated.code !== code) cache.delete(updated.code);
     return serializeAdminLink(updated, publicBaseUrl);
   });
 
@@ -228,6 +238,24 @@ function validityDaysToSeconds(validityDays) {
   return validityDays > 0 ? validityDays * SECONDS_PER_DAY : 0;
 }
 
+function normalizeAdminLinkUpdates(body) {
+  const updates = {};
+  if (Object.hasOwn(body, 'code')) {
+    updates.code = validateCustomSlug(body.code);
+  } else if (Object.hasOwn(body, 'slug')) {
+    updates.code = validateCustomSlug(body.slug);
+  }
+  if (Object.hasOwn(body, 'targetUrl')) {
+    updates.targetUrl = normalizeTargetUrl(body.targetUrl);
+  } else if (Object.hasOwn(body, 'url')) {
+    updates.targetUrl = normalizeTargetUrl(body.url);
+  }
+  if (Object.hasOwn(body, 'validityDays')) {
+    updates.validityDays = normalizeValidityDays(body.validityDays);
+  }
+  return updates;
+}
+
 function serializeAdminLink({ code, targetUrl, createdAt, validityDays, expiresAt, expiresInDays, stats }, publicBaseUrl) {
   return {
     code,
@@ -272,7 +300,7 @@ async function prepareImportPayload(body, { store, codeLength }) {
   const generatedCodes = new Set();
 
   for (const [index, rawRecord] of rawRecords.entries()) {
-    const row = index + 1;
+    const row = Number(rawRecord?.row) || index + 1;
     try {
       records.push(await normalizeImportRecord(rawRecord, { row, store, codeLength, generatedCodes }));
     } catch (error) {
@@ -299,10 +327,11 @@ function extractImportRecords(body) {
 }
 
 async function normalizeImportRecord(record, { row, store, codeLength, generatedCodes }) {
-  const targetUrl = normalizeTargetUrl(record.targetUrl ?? record.url ?? record.longUrl ?? record.destinationUrl);
-  const explicitCode = record.code ?? record.slug;
-  const code = explicitCode
-    ? validateCustomSlug(explicitCode)
+  const targetUrl = normalizeTargetUrl(record.targetUrl ?? record.url ?? record.longUrl ?? record.destinationUrl ?? record.destination ?? record.target);
+  const explicitCode = record.code ?? record.slug ?? record.source;
+  const hasExplicitCode = explicitCode !== undefined && explicitCode !== null && String(explicitCode).trim() !== '';
+  const code = hasExplicitCode
+    ? normalizeImportedSlug(explicitCode)
     : await generateImportCode(store, codeLength, generatedCodes);
   const createdAt = normalizeImportDate(record.createdAt, 'createdAt') || new Date().toISOString();
   const expiresAt = normalizeImportDate(record.expiresAt, 'expiresAt') || null;
@@ -315,6 +344,14 @@ async function normalizeImportRecord(record, { row, store, codeLength, generated
     expiresAt,
     stats: normalizeImportStats(record),
   };
+}
+
+function normalizeImportedSlug(value) {
+  const sanitized = sanitizeCustomSlug(value);
+  if (!sanitized) {
+    throw new Error('Slug has no valid characters after sanitizing');
+  }
+  return validateCustomSlug(sanitized);
 }
 
 async function generateImportCode(store, codeLength, generatedCodes) {
@@ -338,12 +375,14 @@ function normalizeImportDate(value, fieldName) {
 function normalizeImportStats(record) {
   const stats = record.stats && typeof record.stats === 'object' ? record.stats : {};
   const countries = normalizeCountryStats(record.countriesJson ?? record.countries ?? stats.countries);
-  const explicitTotal = record.totalClicks ?? stats.totalClicks ?? stats.total;
+  const explicitTotal = record.totalClicks ?? record.hits ?? stats.totalClicks ?? stats.total;
   const inferredTotal = Object.values(countries).reduce((sum, count) => sum + count, 0);
+  const totalClicks = explicitTotal === undefined || explicitTotal === null || explicitTotal === ''
+    ? inferredTotal
+    : Math.max(0, Math.floor(Number(explicitTotal) || 0));
+  if (totalClicks > 0 && Object.keys(countries).length === 0) countries.ZZ = totalClicks;
   return {
-    totalClicks: explicitTotal === undefined || explicitTotal === null || explicitTotal === ''
-      ? inferredTotal
-      : Math.max(0, Math.floor(Number(explicitTotal) || 0)),
+    totalClicks,
     countries,
   };
 }
@@ -724,14 +763,18 @@ function renderAdmin() {
     .panel { margin-top: 1.25rem; padding: 1.25rem; border: 1px solid #24242d; border-radius: 24px; background: linear-gradient(180deg, var(--panel) 0%, #0f0f15 100%); box-shadow: 0 24px 80px #0008; }
     .auth-panel { border-color: #344258; background: linear-gradient(135deg, #101925 0%, #111118 70%); }
     .token-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; align-items: end; }
-    .toolbar { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; justify-content: space-between; margin-top: 1rem; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; justify-content: space-between; margin-top: 1rem; }
     .toolbar-actions { display: flex; flex-wrap: wrap; gap: .65rem; align-items: center; }
+    .search-control { flex: 1 1 18rem; max-width: 30rem; margin: 0; }
     .secondary-button { background: #20202b; color: #f4f4ff; border-color: #363648; }
     .danger-button { background: #3a1820; color: #ffd7df; border-color: #6d2a38; }
     .import-panel { margin-top: 1rem; padding: 1rem; border: 1px solid #30303b; border-radius: 18px; background: #09090d; }
     .import-grid { display: grid; grid-template-columns: minmax(9rem, 14rem) minmax(0, 1fr); gap: .75rem; align-items: end; }
     .import-actions { display: flex; flex-wrap: wrap; gap: .65rem; margin-top: .85rem; }
     .mapping-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .65rem; margin-top: .85rem; }
+    .mapping-field { display: grid; gap: .45rem; align-content: start; margin: 0; }
+    .mapping-field span { color: #d8d8e6; font-weight: 800; }
+    .manual-default { padding: .72rem .8rem; font-size: .92rem; }
     .preview-table { width: 100%; margin-top: .85rem; border-collapse: collapse; font-size: .9rem; }
     .preview-table th, .preview-table td { padding: .45rem; border-bottom: 1px solid #252532; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
     .pager { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; justify-content: center; margin-block: .85rem; }
@@ -742,23 +785,33 @@ function renderAdmin() {
     .status { margin-top: 1rem; min-height: 1.4rem; }
     .error { color: var(--danger); }
     .empty { margin-top: 1rem; padding: 1rem; border: 1px dashed #383849; border-radius: 18px; color: var(--muted); background: #09090d; }
-    .cards { display: grid; gap: .85rem; margin-top: 1rem; }
-    .card { padding: 1rem; border: 1px solid var(--border); border-radius: 18px; background: var(--panel-2); box-shadow: inset 0 1px 0 #ffffff0c; }
-    .card-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem; }
-    .card-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; justify-content: flex-end; }
-    .code { font-size: 1.15rem; font-weight: 900; color: var(--good); }
-    .clicks { color: #fff; }
-    .target { display: block; margin-top: .6rem; overflow-wrap: anywhere; }
-    .validity-status { margin: .7rem 0 0; color: #d7d7e4; }
-    .validity-form { margin-top: .85rem; }
-    .validity-form label { margin-top: 0; }
-    .validity-edit { display: grid; grid-template-columns: minmax(7rem, 11rem) auto; gap: .5rem; align-items: center; max-width: 28rem; }
-    .validity-help { margin: .45rem 0 0; font-size: .92rem; }
+    .link-list { display: grid; gap: .5rem; margin-top: 1rem; }
+    .list-head, .link-row-main { display: grid; grid-template-columns: minmax(8rem, .8fr) minmax(18rem, 2.1fr) minmax(5rem, .45fr) minmax(9rem, .75fr) auto; gap: .75rem; align-items: center; }
+    .list-head { padding: 0 .85rem; color: var(--muted); font-size: .78rem; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+    .link-row { border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); box-shadow: inset 0 1px 0 #ffffff0c; }
+    .link-row-main { padding: .75rem .85rem; }
+    .link-cell { min-width: 0; }
+    .code { font-size: 1rem; font-weight: 900; color: var(--good); overflow-wrap: anywhere; }
+    .short-url, .target { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .target { margin-top: .2rem; color: #d7d7e4; }
+    .metric { color: #fff; font-weight: 900; }
+    .row-actions { display: flex; flex-wrap: wrap; gap: .45rem; align-items: center; justify-content: flex-end; }
+    .row-actions button { min-height: 2.35rem; padding: .55rem .75rem; border-radius: 10px; }
+    .link-edit-form { display: grid; grid-template-columns: minmax(8rem, .8fr) minmax(16rem, 2fr) minmax(7rem, .55fr) auto; gap: .65rem; padding: .75rem .85rem .9rem; border-top: 1px solid #252532; }
+    .link-edit-form label { margin: 0; font-size: .86rem; }
+    .link-edit-form input { margin-top: .25rem; padding: .72rem .8rem; }
+    .edit-actions { display: flex; gap: .45rem; align-items: end; justify-content: flex-end; }
+    .validity-status { color: #d7d7e4; }
+    .created { display: block; margin-top: .2rem; font-size: .86rem; }
     .stats { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .85rem; }
+    .link-row > .stats { margin: 0; padding: 0 .85rem .75rem; }
     .country { padding: .35rem .6rem; border: 1px solid #29364a; border-radius: 999px; background: #101925; }
+    .import-result { margin-top: .85rem; }
+    .import-result summary { cursor: pointer; color: var(--accent); font-weight: 900; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     [hidden] { display: none !important; }
-    @media (max-width: 640px) { .token-row, .validity-edit, .import-grid { grid-template-columns: 1fr; } .page-size { grid-template-columns: 1fr; } .validity-edit button, .import-actions button { width: 100%; } }
+    @media (max-width: 860px) { .list-head { display: none; } .link-row-main, .link-edit-form { grid-template-columns: 1fr; } .row-actions, .edit-actions { justify-content: flex-start; } .short-url, .target { white-space: normal; } }
+    @media (max-width: 640px) { .token-row, .import-grid { grid-template-columns: 1fr; } .page-size { grid-template-columns: 1fr; } .import-actions button { width: 100%; } }
   </style>
 </head>
 <body>
@@ -786,6 +839,7 @@ function renderAdmin() {
         <div>
           <h2 id="dashboard-title">Links</h2>
         </div>
+        <label class="search-control" for="link-search"><span>Search</span><input id="link-search" type="search" autocomplete="off" placeholder="Slug or destination"></label>
         <div class="toolbar-actions">
           <button type="button" id="export-data" class="secondary-button" hidden>Export</button>
           <button type="button" id="toggle-import" class="secondary-button" hidden>Import</button>
@@ -832,9 +886,11 @@ function renderAdmin() {
     const submitImport = document.querySelector('#submit-import');
     const cancelImport = document.querySelector('#cancel-import');
     const pageSizeSelect = document.querySelector('#page-size');
+    const searchInput = document.querySelector('#link-search');
     let links = [];
     let page = 1;
     let pageSize = Number(pageSizeSelect.value) || 25;
+    let searchQuery = '';
     let currentToken = '';
     let importState = { mode: 'zer0', payload: null, headers: [], rows: [] };
     const millisecondsPerDay = 24 * 60 * 60 * 1000;
@@ -843,13 +899,13 @@ function renderAdmin() {
       ZA: 'South Africa', US: 'United States', GB: 'United Kingdom', IT: 'Italy', DE: 'Germany', FR: 'France', ES: 'Spain', NL: 'Netherlands', AU: 'Australia', CA: 'Canada', BR: 'Brazil', IN: 'India', JP: 'Japan', CN: 'China', RU: 'Russia', ZZ: 'Unknown'
     };
     const importFields = [
-      { key: 'targetUrl', label: 'Target URL', required: true, aliases: ['targeturl', 'url', 'longurl', 'destination', 'destinationurl'] },
-      { key: 'code', label: 'Slug', aliases: ['code', 'slug', 'shortcode', 'shorturl'] },
-      { key: 'createdAt', label: 'Created at', aliases: ['createdat', 'created', 'createdon'] },
-      { key: 'validityDays', label: 'Validity days', aliases: ['validitydays', 'retentiondays', 'expiresindays'] },
-      { key: 'expiresAt', label: 'Expires at', aliases: ['expiresat', 'expires', 'expiry', 'expiration'] },
-      { key: 'totalClicks', label: 'Total clicks', aliases: ['totalclicks', 'clicks', 'visits'] },
-      { key: 'countriesJson', label: 'Countries JSON', aliases: ['countriesjson', 'countries', 'countrystats'] },
+      { key: 'targetUrl', label: 'Target URL', required: true, aliases: ['targeturl', 'target', 'url', 'longurl', 'destination', 'destinationurl'] },
+      { key: 'code', label: 'Slug', aliases: ['code', 'slug', 'source', 'shortcode', 'shorturl'], manualPlaceholder: 'Optional shared slug' },
+      { key: 'createdAt', label: 'Created at', aliases: ['createdat', 'created', 'createdon'], manualPlaceholder: 'YYYY-MM-DD or ISO date' },
+      { key: 'validityDays', label: 'Validity days', aliases: ['validitydays', 'retentiondays', 'expiresindays'], manualPlaceholder: '0 for indefinite' },
+      { key: 'expiresAt', label: 'Expires at', aliases: ['expiresat', 'expires', 'expiry', 'expiration'], manualPlaceholder: 'Optional ISO date' },
+      { key: 'totalClicks', label: 'Total clicks', aliases: ['totalclicks', 'clicks', 'visits', 'hits'], manualPlaceholder: '0' },
+      { key: 'countriesJson', label: 'Countries JSON', aliases: ['countriesjson', 'countries', 'countrystats'], manualPlaceholder: '{"ZZ":0}' },
     ];
 
     form.addEventListener('submit', async (event) => {
@@ -893,6 +949,8 @@ function renderAdmin() {
       token.value = '';
       links = [];
       page = 1;
+      searchQuery = '';
+      searchInput.value = '';
       setAuthenticated(false);
       status.className = 'status muted';
       status.textContent = 'Logged out. Paste ADMIN_TOKEN to load admin data.';
@@ -908,18 +966,39 @@ function renderAdmin() {
       renderPage();
     });
 
+    searchInput.addEventListener('input', () => {
+      searchQuery = searchInput.value.trim().toLowerCase();
+      page = 1;
+      renderPage();
+    });
+
     results.addEventListener('click', async (event) => {
-      const button = event.target.closest('.delete-link');
-      if (!button) return;
-      await deleteLink(button.dataset.code);
+      const editButton = event.target.closest('.edit-link');
+      if (editButton) {
+        toggleEditForm(editButton.dataset.code, editButton);
+        return;
+      }
+      const cancelButton = event.target.closest('.cancel-edit');
+      if (cancelButton) {
+        const formElement = cancelButton.closest('.link-edit-form');
+        if (formElement) hideEditForm(formElement.dataset.code);
+        return;
+      }
+      const deleteButton = event.target.closest('.delete-link');
+      if (!deleteButton) return;
+      await deleteLink(deleteButton.dataset.code);
     });
 
     results.addEventListener('submit', async (event) => {
-      const validityForm = event.target.closest('.validity-form');
-      if (!validityForm) return;
+      const editForm = event.target.closest('.link-edit-form');
+      if (!editForm) return;
       event.preventDefault();
-      const formData = new FormData(validityForm);
-      await saveValidity(validityForm.dataset.code, formData.get('validityDays'));
+      const formData = new FormData(editForm);
+      await saveLink(editForm.dataset.code, {
+        code: formData.get('code'),
+        targetUrl: formData.get('targetUrl'),
+        validityDays: formData.get('validityDays'),
+      });
     });
 
     const savedToken = localStorage.getItem('zer0:adminToken');
@@ -1024,8 +1103,12 @@ function renderAdmin() {
         if (csvRows.length < 2) throw new Error('CSV must include a header row and at least one data row.');
         const headers = csvRows[0].map((header) => String(header || '').trim());
         const rows = csvRows.slice(1)
-          .filter((row) => row.some((value) => String(value || '').trim() !== ''))
-          .map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index] || ''])));
+          .map((row, index) => ({ row, rowNumber: index + 2 }))
+          .filter(({ row }) => row.some((value) => String(value || '').trim() !== ''))
+          .map(({ row, rowNumber }) => {
+            const values = Object.fromEntries(headers.map((header, index) => [header, row[index] || '']));
+            return { ...values, __zer0RowNumber: rowNumber };
+          });
         if (rows.length === 0) throw new Error('CSV has no importable data rows.');
         importState = { mode: 'custom', payload: null, headers, rows };
         renderMappingFields();
@@ -1042,10 +1125,11 @@ function renderAdmin() {
     function renderMappingFields() {
       mappingFields.innerHTML = importFields.map((field) => {
         const selected = defaultHeaderFor(field);
-        const options = ['<option value="">Use default</option>']
+        const options = ['<option value="">' + (field.required ? 'Choose column' : 'Use manual/default') + '</option>']
           .concat(importState.headers.map((header) => '<option value="' + escapeAttr(header) + '"' + (header === selected ? ' selected' : '') + '>' + escapeClient(header) + '</option>'))
           .join('');
-        return '<label for="map-' + escapeAttr(field.key) + '">' + escapeClient(field.label) + (field.required ? ' *' : '') + '<select id="map-' + escapeAttr(field.key) + '" data-import-field="' + escapeAttr(field.key) + '">' + options + '</select></label>';
+        const manualInput = field.required ? '' : '<input class="manual-default" id="manual-' + escapeAttr(field.key) + '" data-import-manual="' + escapeAttr(field.key) + '" placeholder="' + escapeAttr(field.manualPlaceholder || 'Manual value') + '" autocomplete="off">';
+        return '<label class="mapping-field" for="map-' + escapeAttr(field.key) + '"><span>' + escapeClient(field.label) + (field.required ? ' *' : '') + '</span><select id="map-' + escapeAttr(field.key) + '" data-import-field="' + escapeAttr(field.key) + '">' + options + '</select>' + manualInput + '</label>';
       }).join('');
     }
 
@@ -1057,7 +1141,7 @@ function renderAdmin() {
       const previewRows = importState.rows.slice(0, 5);
       const headerHtml = importState.headers.slice(0, 6).map((header) => '<th>' + escapeClient(header) + '</th>').join('');
       const bodyHtml = previewRows.map((row) => '<tr>' + importState.headers.slice(0, 6).map((header) => '<td>' + escapeClient(row[header]) + '</td>').join('') + '</tr>').join('');
-      importPreview.innerHTML = '<p class="muted">Mapped CSV preview. Existing slugs will be skipped. Missing optional fields use zer0 defaults.</p><table class="preview-table"><thead><tr>' + headerHtml + '</tr></thead><tbody>' + bodyHtml + '</tbody></table>';
+      importPreview.innerHTML = '<p class="muted">Mapped CSV preview. Existing slugs will be skipped. Optional unmapped fields can use manual values, otherwise zer0 defaults apply.</p><table class="preview-table"><thead><tr>' + headerHtml + '</tr></thead><tbody>' + bodyHtml + '</tbody></table>';
     }
 
     async function submitImportPayload() {
@@ -1088,11 +1172,13 @@ function renderAdmin() {
 
       importStatus.className = data.failed > 0 ? 'status error' : 'status muted';
       importStatus.textContent = 'Imported ' + data.imported + ', skipped ' + data.skipped + ', expired ' + data.expired + ', failed ' + data.failed + '.';
+      renderImportResult(data);
       if (data.imported > 0) await loadLinks(currentToken, { persistToken: false });
     }
 
     function buildCustomImportRecords() {
       const mapping = {};
+      const manualValues = {};
       for (const field of importFields) {
         const selected = document.querySelector('[data-import-field="' + field.key + '"]')?.value || '';
         if (field.required && !selected) {
@@ -1101,16 +1187,30 @@ function renderAdmin() {
           return null;
         }
         mapping[field.key] = selected;
+        manualValues[field.key] = document.querySelector('[data-import-manual="' + field.key + '"]')?.value || '';
       }
 
       return importState.rows.map((row) => {
-        const record = {};
+        const record = { row: row.__zer0RowNumber };
         for (const field of importFields) {
           const header = mapping[field.key];
-          if (header && row[header] !== undefined && row[header] !== '') record[field.key] = row[header];
+          const value = header && row[header] !== undefined && row[header] !== '' ? row[header] : manualValues[field.key];
+          if (value !== undefined && value !== '') record[field.key] = value;
         }
         return record;
       });
+    }
+
+    function renderImportResult(data) {
+      const rows = Array.isArray(data.rows) ? data.rows : [];
+      if (rows.length === 0) return;
+      const notableRows = rows.filter((row) => row.status !== 'imported');
+      if (notableRows.length === 0) {
+        importPreview.innerHTML += '<p class="muted">All rows imported successfully.</p>';
+        return;
+      }
+      const bodyHtml = notableRows.map((row) => '<tr><td>' + Number(row.row || 0) + '</td><td>' + escapeClient(row.code || '') + '</td><td>' + escapeClient(row.status || '') + '</td><td>' + escapeClient(row.reason || '') + '</td></tr>').join('');
+      importPreview.innerHTML += '<details class="import-result" open><summary>Rows needing attention</summary><table class="preview-table"><thead><tr><th>Row</th><th>Slug</th><th>Status</th><th>Reason</th></tr></thead><tbody>' + bodyHtml + '</tbody></table></details>';
     }
 
     function resetImportPanel({ keepMode = false, keepFile = false } = {}) {
@@ -1147,16 +1247,22 @@ function renderAdmin() {
       renderPage({ updateStatus: false });
     }
 
-    async function saveValidity(code, validityDaysValue) {
-      if (!code) return;
-      const validityDays = normalizeDays(validityDaysValue);
+    async function saveLink(originalCode, updates) {
+      const nextCode = String(updates.code || '').trim();
+      const targetUrl = String(updates.targetUrl || '').trim();
+      if (!nextCode || !targetUrl) {
+        status.className = 'status error';
+        status.textContent = 'Slug and destination are required.';
+        return;
+      }
+      const validityDays = normalizeDays(updates.validityDays);
       status.className = 'status muted';
-      status.textContent = 'Saving validity for /' + code + '…';
+      status.textContent = 'Saving /' + originalCode + '…';
       results.setAttribute('aria-busy', 'true');
-      const response = await fetch('/api/admin/links/' + encodeURIComponent(code), {
+      const response = await fetch('/api/admin/links/' + encodeURIComponent(originalCode), {
         method: 'PATCH',
         headers: { 'content-type': 'application/json', 'X-Admin-Token': currentToken },
-        body: JSON.stringify({ validityDays }),
+        body: JSON.stringify({ code: nextCode, targetUrl, validityDays }),
       });
       const data = await response.json().catch(() => ({}));
       results.setAttribute('aria-busy', 'false');
@@ -1166,60 +1272,110 @@ function renderAdmin() {
           setAuthenticated(false);
         }
         status.className = 'status error';
-        status.textContent = data.error || 'Failed to save validity for /' + code;
+        status.textContent = data.error || 'Failed to save /' + originalCode;
         return;
       }
 
-      const index = links.findIndex((link) => link.code === code);
+      const index = links.findIndex((link) => link.code === originalCode);
       if (index >= 0) links[index] = data;
+      links.sort((left, right) => left.code.localeCompare(right.code));
       status.className = 'status muted';
-      status.textContent = validityDays === 0 ? '/' + code + ' is now valid indefinitely.' : '/' + code + ' is valid for ' + validityDays + ' days from now.';
+      const savedCode = data.code || nextCode;
+      const validityCopy = validityDays === 0 ? 'valid indefinitely' : 'valid for ' + validityDays + ' days from now';
+      status.textContent = '/' + savedCode + ' saved and is ' + validityCopy + '.';
       renderPage({ updateStatus: false });
     }
 
     function renderPage({ updateStatus = true } = {}) {
-      const totalClicks = links.reduce((sum, link) => sum + (Number(link.totalClicks) || 0), 0);
-      const pageCount = Math.max(1, Math.ceil(links.length / pageSize));
+      const filteredLinks = matchingLinks();
+      const totalClicks = filteredLinks.reduce((sum, link) => sum + (Number(link.totalClicks) || 0), 0);
+      const pageCount = Math.max(1, Math.ceil(filteredLinks.length / pageSize));
       page = Math.min(Math.max(1, page), pageCount);
       const start = (page - 1) * pageSize;
-      const visibleLinks = links.slice(start, start + pageSize);
+      const visibleLinks = filteredLinks.slice(start, start + pageSize);
       if (updateStatus) {
         status.className = 'status muted';
-        status.textContent = links.length === 0 ? 'Loaded. No links yet.' : 'Showing links ' + (start + 1) + '–' + Math.min(start + pageSize, links.length) + ' of ' + links.length + '.';
+        if (links.length === 0) {
+          status.textContent = 'Loaded. No links yet.';
+        } else if (searchQuery && filteredLinks.length === 0) {
+          status.textContent = 'No matches for "' + searchQuery + '" across ' + links.length + ' links.';
+        } else if (searchQuery) {
+          status.textContent = 'Showing matches ' + (start + 1) + '–' + Math.min(start + pageSize, filteredLinks.length) + ' of ' + filteredLinks.length + ' for "' + searchQuery + '".';
+        } else {
+          status.textContent = 'Showing links ' + (start + 1) + '–' + Math.min(start + pageSize, filteredLinks.length) + ' of ' + filteredLinks.length + '.';
+        }
       }
-      results.innerHTML = '<div class="summary" aria-label="Dashboard summary"><div class="pill"><span>Links</span><strong>' + links.length + '</strong></div><div class="pill"><span>Total clicks</span><strong>' + totalClicks + '</strong></div><div class="pill"><span>Page</span><strong>' + page + ' / ' + pageCount + '</strong></div></div>';
+      results.innerHTML = '<div class="summary" aria-label="Dashboard summary"><div class="pill"><span>Links</span><strong>' + links.length + '</strong></div><div class="pill"><span>Matching</span><strong>' + filteredLinks.length + '</strong></div><div class="pill"><span>Matched clicks</span><strong>' + totalClicks + '</strong></div><div class="pill"><span>Page</span><strong>' + page + ' / ' + pageCount + '</strong></div></div>';
 
       if (links.length === 0) {
         results.innerHTML += '<div class="empty">No links found. Create your first short link from the homepage.</div>';
         return;
       }
+      if (filteredLinks.length === 0) {
+        results.innerHTML += '<div class="empty">No links match your search.</div>';
+        return;
+      }
 
       results.append(renderPager(pageCount));
-      const cards = document.createElement('div');
-      cards.className = 'cards';
+      const list = document.createElement('div');
+      list.className = 'link-list';
+      list.setAttribute('role', 'list');
+      list.innerHTML = '<div class="list-head" aria-hidden="true"><span>Slug</span><span>Destination</span><span>Clicks</span><span>Validity</span><span>Actions</span></div>';
       for (const link of visibleLinks) {
         const countries = Object.entries(link.countries || {})
           .filter(([_country, count]) => Number(count) > 0)
           .sort((a, b) => b[1] - a[1]);
         const countryHtml = countries.length
           ? countries.map(([country, count]) => '<span class="country">' + escapeClient(formatCountry(country)) + ': ' + Number(count) + '</span>').join('')
-          : '<span class="muted">No clicks yet</span>';
+          : '<span class="muted">No country stats</span>';
+        const editFormId = 'edit-form-' + link.code;
+        const codeInputId = 'code-input-' + link.code;
+        const targetInputId = 'target-input-' + link.code;
         const validityInputId = 'validity-days-' + link.code;
         const validityHelpId = 'validity-help-' + link.code;
         const validityValue = normalizeDays(link.validityDays);
         const card = document.createElement('article');
-        card.className = 'card';
-        card.innerHTML = '<div class="card-head"><div><span class="code">/' + escapeClient(link.code) + '</span></div><div class="card-actions"><strong class="clicks">Total clicks: ' + Number(link.totalClicks || 0) + '</strong><button type="button" class="delete-link danger-button" data-code="' + escapeAttr(link.code) + '">Delete</button></div></div>'
-          + '<a class="target" href="' + escapeAttr(link.shortUrl) + '">' + escapeClient(link.shortUrl) + '</a>'
-          + '<a class="target muted" href="' + escapeAttr(link.targetUrl) + '">' + escapeClient(link.targetUrl) + '</a>'
-          + (link.createdAt ? '<p class="muted">Created: ' + escapeClient(link.createdAt) + '</p>' : '')
-          + '<p class="validity-status">' + escapeClient(validitySummary(link)) + '</p>'
-          + '<form class="validity-form" data-code="' + escapeAttr(link.code) + '"><label for="' + escapeAttr(validityInputId) + '">Validity days</label><div class="validity-edit"><input id="' + escapeAttr(validityInputId) + '" name="validityDays" type="number" min="0" step="1" inputmode="numeric" value="' + validityValue + '" aria-describedby="' + escapeAttr(validityHelpId) + '"><button type="submit" class="secondary-button save-validity">Save</button></div><p id="' + escapeAttr(validityHelpId) + '" class="muted validity-help">0 keeps this link valid indefinitely. Positive values start from save time.</p></form>'
+        card.className = 'link-row';
+        card.setAttribute('role', 'listitem');
+        card.innerHTML = '<div class="link-row-main"><div class="link-cell"><a class="code" href="' + escapeAttr(link.shortUrl) + '">/' + escapeClient(link.code) + '</a>' + (link.createdAt ? '<span class="muted created">Created ' + escapeClient(link.createdAt) + '</span>' : '') + '</div>'
+          + '<div class="link-cell"><a class="short-url" href="' + escapeAttr(link.shortUrl) + '">' + escapeClient(link.shortUrl) + '</a><a class="target" href="' + escapeAttr(link.targetUrl) + '">' + escapeClient(link.targetUrl) + '</a></div>'
+          + '<div class="link-cell metric">' + Number(link.totalClicks || 0) + '</div>'
+          + '<div class="link-cell validity-status">' + escapeClient(validitySummary(link)) + '</div>'
+          + '<div class="row-actions"><button type="button" class="edit-link secondary-button" data-code="' + escapeAttr(link.code) + '" aria-controls="' + escapeAttr(editFormId) + '" aria-expanded="false">Edit</button><button type="button" class="delete-link danger-button" data-code="' + escapeAttr(link.code) + '">Delete</button></div></div>'
+          + '<form id="' + escapeAttr(editFormId) + '" class="link-edit-form" data-code="' + escapeAttr(link.code) + '" hidden>'
+          + '<label for="' + escapeAttr(codeInputId) + '">Slug<input id="' + escapeAttr(codeInputId) + '" name="code" value="' + escapeAttr(link.code) + '" pattern="[A-Za-z0-9_-]{3,48}" minlength="3" maxlength="48" required></label>'
+          + '<label for="' + escapeAttr(targetInputId) + '">Destination<input id="' + escapeAttr(targetInputId) + '" name="targetUrl" type="url" value="' + escapeAttr(link.targetUrl) + '" required></label>'
+          + '<label for="' + escapeAttr(validityInputId) + '">Validity days<input id="' + escapeAttr(validityInputId) + '" name="validityDays" type="number" min="0" step="1" inputmode="numeric" value="' + validityValue + '" aria-describedby="' + escapeAttr(validityHelpId) + '"><span id="' + escapeAttr(validityHelpId) + '" class="muted created">0 keeps this link valid indefinitely.</span></label>'
+          + '<div class="edit-actions"><button type="submit" class="secondary-button">Save</button><button type="button" class="cancel-edit secondary-button">Cancel</button></div></form>'
           + '<div class="stats" aria-label="Country click counters">' + countryHtml + '</div>';
-        cards.append(card);
+        list.append(card);
       }
-      results.append(cards);
+      results.append(list);
       results.append(renderPager(pageCount));
+    }
+
+    function matchingLinks() {
+      if (!searchQuery) return links;
+      return links.filter((link) => String(link.code || '').toLowerCase().includes(searchQuery) || String(link.targetUrl || '').toLowerCase().includes(searchQuery));
+    }
+
+    function toggleEditForm(code, button) {
+      const formElement = document.getElementById('edit-form-' + code);
+      if (!formElement) return;
+      const isHidden = formElement.hidden;
+      formElement.hidden = !isHidden;
+      button.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+      if (isHidden) formElement.querySelector('input')?.focus();
+    }
+
+    function hideEditForm(code) {
+      const formElement = document.getElementById('edit-form-' + code);
+      const button = Array.from(document.querySelectorAll('.edit-link')).find((item) => item.dataset.code === code);
+      if (formElement) {
+        formElement.reset();
+        formElement.hidden = true;
+      }
+      if (button) button.setAttribute('aria-expanded', 'false');
     }
 
     function renderPager(pageCount) {

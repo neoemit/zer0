@@ -21,7 +21,7 @@ A tiny, fast, self-hosted URL shortener built for Docker Compose. zer0 keeps the
 - 🪐 **Branded invalid-link page**: expired, removed, missing, or malformed public short URLs render a helpful HTML page instead of plain `Not found` text.
 - 🏡 **Self-hosting prompt**: the homepage footer invites visitors to self-host their own zer0 and links to the source code at <https://github.com/neoemit/zer0>.
 - 📊 **Admin stats**: total clicks plus country buckets from local GeoIP lookup.
-- 🧭 **Admin dashboard**: token-based login, local token persistence, pagination, country names/flags, refresh, logout, per-link validity editing, import/export, deletion, and accessible status updates.
+- 🧭 **Admin dashboard**: token-based login, local token persistence, search, pagination, country names/flags, refresh, logout, per-link slug/destination/validity editing, import/export, deletion, and accessible status updates.
 - 🧹 **Cleanup controls**: delete one link or all links; deletion removes metadata, stats, and hot-cache entries so slugs can be reused with fresh counters.
 
 ## 🧱 Stack
@@ -188,16 +188,18 @@ curl -H 'X-Admin-Token: $ADMIN_TOKEN' \
 }
 ```
 
-### Edit link validity
+### Edit link fields
 
-Saving a positive value resets expiry from the save time. Saving `0` makes the link valid indefinitely.
+Admins can edit a link slug, destination URL, and validity. Saving a positive validity value resets expiry from the save time. Saving `0` makes the link valid indefinitely. Slug changes are non-destructive: if the requested slug already exists, zer0 returns `409` and leaves both links unchanged.
 
 ```bash
 curl -X PATCH -H 'content-type: application/json' \
   -H 'X-Admin-Token: $ADMIN_TOKEN' \
-  -d '{"validityDays":0}' \
+  -d '{"code":"new-slug","targetUrl":"https://example.com/new","validityDays":0}' \
   http://localhost:3000/api/admin/links/abc123
 ```
+
+For backward compatibility, a validity-only payload such as `{"validityDays":30}` still works.
 
 ### Export links
 
@@ -276,7 +278,9 @@ Or custom normalized records:
 }
 ```
 
-Custom CSV imports are available in the admin dashboard. Choose **Custom CSV**, upload a CSV file, map the required target URL column, and optionally map slug, timestamps, validity, expiry, total clicks, and country stats. Missing optional fields use zer0 defaults: generated slug, current creation time, indefinite validity, and zero stats.
+Custom CSV imports are available in the admin dashboard. Choose **Custom CSV**, upload a CSV file, map the required target URL column, and optionally map slug, timestamps, validity, expiry, total clicks, and country stats. Optional fields can also use a manual fallback value, for example validity `0` for every row. Missing optional fields use zer0 defaults: generated slug, current creation time, indefinite validity, and zero stats.
+
+Common custom headers are detected automatically, including `source` as slug, `target` as destination URL, and `hits` as total clicks. Imported slugs are sanitized by stripping invalid characters, so `/snippets/` becomes `snippets`. If total clicks are provided without country stats, zer0 assigns those clicks to `ZZ` / Unknown.
 
 ### Delete links
 
@@ -300,7 +304,7 @@ The dashboard:
 
 - stores a successfully used token in browser `localStorage` for future visits;
 - hides the token form and shows links only after authentication succeeds;
-- supports refresh, logout, pagination, per-link validity edits, zer0 export downloads, zer0 export imports, custom CSV imports, and delete buttons;
+- supports refresh, logout, substring search across slug and destination, pagination, per-link slug/destination/validity edits, zer0 export downloads, zer0 export imports, custom CSV imports, and delete buttons;
 - asks for confirmation before deleting a link;
 - displays country stats with flags and full country names;
 - suppresses zero-valued country counters for unclicked links;
@@ -325,7 +329,7 @@ CAPTCHA_PROVIDER=none npm start
 
 Every pull request must include a `## Release notes` section. Use `- No user-facing changes.` when a PR should not appear in release notes. GitHub Actions validates that section on PRs, and `.github/release.yml` configures GitHub’s generated release notes for tagged releases.
 
-The project is currently versioned at `0.1.0`; create the first GitHub release from tag `v0.1.0` after merging the import/export feature.
+The project is currently versioned at `0.1.1`; create future GitHub releases from version tags after merging release-worthy changes.
 
 ## 🏎️ Performance notes
 

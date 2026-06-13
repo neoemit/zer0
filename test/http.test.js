@@ -81,14 +81,48 @@ class MemoryStore {
     };
   }
   async updateValidity(code, validityDays) {
+    return this.updateLink(code, { validityDays });
+  }
+  async updateLink(code, updates = {}) {
     const targetUrl = this.map.get(code);
     if (!targetUrl) return null;
-    const normalizedDays = normalizeDays(validityDays);
-    const ttlSeconds = normalizedDays > 0 ? normalizedDays * SECONDS_PER_DAY : 0;
-    const expiresAt = ttlSeconds > 0 ? new Date(Date.now() + ttlSeconds * 1000).toISOString() : null;
-    this.ttls.set(code, ttlSeconds);
-    this.metadata.set(code, { ...(this.metadata.get(code) ?? {}), validityDays: normalizedDays, expiresAt });
-    return this.linkFor(code, targetUrl);
+
+    const nextCode = String(updates.code || code);
+    if (nextCode !== code && this.map.has(nextCode)) return { conflict: true };
+
+    const existingMetadata = this.metadata.get(code) ?? {};
+    const nextTargetUrl = Object.hasOwn(updates, 'targetUrl') ? String(updates.targetUrl) : targetUrl;
+    const validityWasUpdated = Object.hasOwn(updates, 'validityDays');
+    const ttlSeconds = validityWasUpdated
+      ? normalizeDays(updates.validityDays) * SECONDS_PER_DAY
+      : this.ttls.get(code) ?? 0;
+    const normalizedDays = validityWasUpdated
+      ? normalizeDays(updates.validityDays)
+      : normalizeDays(existingMetadata.validityDays ?? (ttlSeconds > 0 ? Math.ceil(ttlSeconds / SECONDS_PER_DAY) : 0));
+    const expiresAt = ttlSeconds > 0
+      ? (validityWasUpdated ? new Date(Date.now() + ttlSeconds * 1000).toISOString() : existingMetadata.expiresAt || new Date(Date.now() + ttlSeconds * 1000).toISOString())
+      : null;
+    const metadata = {
+      ...existingMetadata,
+      code: nextCode,
+      targetUrl: nextTargetUrl,
+      validityDays: normalizedDays,
+      expiresAt,
+    };
+
+    if (nextCode !== code) {
+      this.map.delete(code);
+      this.ttls.delete(code);
+      this.metadata.delete(code);
+      const stats = this.stats.get(code);
+      this.stats.delete(code);
+      if (stats) this.stats.set(nextCode, { ...stats, code: nextCode });
+    }
+
+    this.map.set(nextCode, nextTargetUrl);
+    this.ttls.set(nextCode, ttlSeconds);
+    this.metadata.set(nextCode, metadata);
+    return this.linkFor(nextCode, nextTargetUrl);
   }
   async delete(code) {
     const existed = this.map.delete(code);
@@ -500,6 +534,40 @@ test('custom import applies defaults, skips conflicts, and reports row errors', 
   await app.close();
 });
 
+test('custom import sanitizes source slugs and assigns hits to unknown country', async () => {
+  const store = new MemoryStore();
+  const app = await buildApp({ store, publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/admin/import',
+    headers: { 'x-admin-token': 'secret' },
+    payload: {
+      mode: 'custom',
+      records: [
+        { row: 2, source: '/snippets/', target: 'https://github.com/Danie10/yaml-snippets', hits: '9', validityDays: '0' },
+        { row: 3, source: '/riverlandsmall/', target: 'https://photoshare.gadgeteerza.co.za/share/qlqyAn4QTTo3SHOuv_14TWj5uXzVxQVY_OPK3DoDG-cgmYIMYJRmzOI6g5UBXqJ6v2w', hits: '7', validityDays: '0' },
+        { row: 4, source: '/ctpublic/', target: 'https://gadgeteer.co.za/myotherinterests/gadgeteerza-public-photos/places-photo-albums/', hits: '11', validityDays: '0' },
+      ],
+    },
+  });
+
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.imported, 3);
+  assert.equal(body.failed, 0);
+  assert.deepEqual(body.rows.map((row) => [row.row, row.code, row.status]), [
+    [2, 'snippets', 'imported'],
+    [3, 'riverlandsmall', 'imported'],
+    [4, 'ctpublic', 'imported'],
+  ]);
+  assert.equal(await store.get('snippets'), 'https://github.com/Danie10/yaml-snippets');
+  assert.equal(store.ttl('snippets'), 0);
+  assert.deepEqual(await store.getStats('snippets'), { code: 'snippets', totalClicks: 9, countries: { ZZ: 9 } });
+  assert.deepEqual(await store.getStats('ctpublic'), { code: 'ctpublic', totalClicks: 11, countries: { ZZ: 11 } });
+  await app.close();
+});
+
 test('import reports expired zer0 records without creating them', async () => {
   const store = new MemoryStore();
   const app = await buildApp({ store, publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
@@ -547,6 +615,59 @@ test('admin can make an existing link valid indefinitely', async () => {
   assert.equal(body.validityDays, 0);
   assert.equal(body.expiresAt, null);
   assert.equal(body.expiresInDays, null);
+  await app.close();
+});
+
+test('admin can edit slug destination and validity together', async () => {
+  const store = new MemoryStore();
+  await store.set('editold', 'https://example.com/old', { ttlSeconds: 5 * SECONDS_PER_DAY, validityDays: 5 });
+  const app = await buildApp({ store, publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret', geolocateIp: () => 'US' });
+
+  assert.equal((await app.inject({ method: 'GET', url: '/editold' })).statusCode, 302);
+  const response = await app.inject({
+    method: 'PATCH',
+    url: '/api/admin/links/editold',
+    headers: { 'x-admin-token': 'secret' },
+    payload: { code: 'editnew', targetUrl: 'https://example.com/new', validityDays: 0 },
+  });
+  const oldRedirect = await app.inject({ method: 'GET', url: '/editold' });
+  const newRedirect = await app.inject({ method: 'GET', url: '/editnew' });
+
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.code, 'editnew');
+  assert.equal(body.shortUrl, 'http://sho.rt/editnew');
+  assert.equal(body.targetUrl, 'https://example.com/new');
+  assert.equal(body.validityDays, 0);
+  assert.equal(body.expiresAt, null);
+  assert.equal(body.expiresInDays, null);
+  assert.equal(await store.get('editold'), null);
+  assert.equal(await store.get('editnew'), 'https://example.com/new');
+  assert.equal(store.ttl('editnew'), 0);
+  assert.deepEqual(await store.getStats('editnew'), { code: 'editnew', totalClicks: 2, countries: { US: 2 } });
+  assert.equal(oldRedirect.statusCode, 404);
+  assert.equal(newRedirect.statusCode, 302);
+  assert.equal(newRedirect.headers.location, 'https://example.com/new');
+  await app.close();
+});
+
+test('admin slug edits reject conflicts without mutating either link', async () => {
+  const store = new MemoryStore();
+  await store.set('source1', 'https://example.com/source');
+  await store.set('taken1', 'https://example.com/taken');
+  const app = await buildApp({ store, publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
+
+  const response = await app.inject({
+    method: 'PATCH',
+    url: '/api/admin/links/source1',
+    headers: { authorization: 'Bearer secret' },
+    payload: { code: 'taken1', targetUrl: 'https://example.com/changed', validityDays: 10 },
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), { error: 'Slug already exists' });
+  assert.equal(await store.get('source1'), 'https://example.com/source');
+  assert.equal(await store.get('taken1'), 'https://example.com/taken');
   await app.close();
 });
 
@@ -655,18 +776,21 @@ test('admin page supports confirmed per-link deletion and hides dashboard until 
   await app.close();
 });
 
-test('admin page supports editing per-link validity', async () => {
+test('admin page supports searching and editing per-link fields', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
 
   const response = await app.inject({ method: 'GET', url: '/admin' });
 
   assert.equal(response.statusCode, 200);
-  assert.match(response.body, /class="validity-form"/);
-  assert.match(response.body, /saveValidity/);
+  assert.match(response.body, /id="link-search"/);
+  assert.match(response.body, /matchingLinks/);
+  assert.match(response.body, /class="link-edit-form"/);
+  assert.match(response.body, /name="code"/);
+  assert.match(response.body, /name="targetUrl"/);
+  assert.match(response.body, /saveLink/);
   assert.match(response.body, /method: 'PATCH'/);
   assert.match(response.body, /validitySummary/);
   assert.match(response.body, /0 keeps this link valid indefinitely/);
-  assert.match(response.body, /Positive values start from save time/);
   await app.close();
 });
 
@@ -685,6 +809,11 @@ test('admin page exposes import and export controls', async () => {
   assert.match(response.body, /\/api\/admin\/export/);
   assert.match(response.body, /\/api\/admin\/import/);
   assert.match(response.body, /Existing slugs will be skipped/);
+  assert.match(response.body, /source/);
+  assert.match(response.body, /target/);
+  assert.match(response.body, /hits/);
+  assert.match(response.body, /data-import-manual/);
+  assert.match(response.body, /Rows needing attention/);
   await app.close();
 });
 

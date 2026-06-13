@@ -98,6 +98,33 @@ export class RedisStore {
     return links;
   }
 
+  async exportLinks() {
+    return this.listLinks();
+  }
+
+  async importLinks(records = []) {
+    const rows = [];
+    for (const record of records) {
+      const row = Number(record.row) || rows.length + 1;
+      const code = String(record.code || '');
+      const targetUrl = String(record.targetUrl || '');
+      const importOptions = normalizeImportOptions(record);
+      if (importOptions.expired) {
+        rows.push({ row, code, status: 'expired', reason: 'Link expiry is in the past' });
+        continue;
+      }
+
+      const created = await this.writeImportedLink({ code, targetUrl, ...importOptions });
+      if (!created) {
+        rows.push({ row, code, status: 'skipped', reason: 'Slug already exists' });
+        continue;
+      }
+      rows.push({ row, code, status: 'imported' });
+    }
+
+    return summarizeImportRows(rows);
+  }
+
   async updateValidity(code, validityDays) {
     const targetUrl = await this.redis.get(urlKey(code));
     if (!targetUrl) return null;
@@ -170,6 +197,33 @@ export class RedisStore {
   async close() {
     this.redis.disconnect();
   }
+
+  async writeImportedLink({ code, targetUrl, createdAt, validityDays, expiresAt, ttl, stats }) {
+    const result = ttl > 0
+      ? await this.redis.set(urlKey(code), targetUrl, 'EX', ttl, 'NX')
+      : await this.redis.set(urlKey(code), targetUrl, 'NX');
+    if (result !== 'OK') return false;
+
+    const metadata = { code, targetUrl, createdAt, validityDays };
+    if (expiresAt) metadata.expiresAt = expiresAt;
+    const pipeline = this.redis.pipeline()
+      .sadd(CODE_INDEX_KEY, code)
+      .hset(metaKey(code), metadata);
+
+    const statsFields = serializeStatsFields(stats);
+    if (Object.keys(statsFields).length > 0) {
+      pipeline.hset(statsKey(code), statsFields);
+    }
+
+    if (ttl > 0) {
+      pipeline
+        .expire(metaKey(code), ttl)
+        .expire(statsKey(code), ttl);
+    }
+
+    await pipeline.exec();
+    return true;
+  }
 }
 
 function buildLink({ code, targetUrl, metadata = {}, stats, ttl }) {
@@ -217,6 +271,71 @@ function normalizeSetOptions(options = DEFAULT_RETENTION_SECONDS) {
     ttl,
     validityDays: ttl > 0 ? Math.ceil(ttl / SECONDS_PER_DAY) : 0,
     expiresAt: ttl > 0 ? new Date(Date.now() + ttl * 1000).toISOString() : null,
+  };
+}
+
+function normalizeImportOptions(record) {
+  const createdAt = normalizeIsoDate(record.createdAt) || new Date().toISOString();
+  const requestedDays = normalizeValidityDays(record.validityDays);
+  const requestedExpiry = normalizeIsoDate(record.expiresAt);
+  if (requestedExpiry) {
+    const ttl = Math.floor((Date.parse(requestedExpiry) - Date.now()) / 1000);
+    if (ttl <= 0) {
+      return { expired: true };
+    }
+    return {
+      createdAt,
+      validityDays: requestedDays || Math.ceil(ttl / SECONDS_PER_DAY),
+      expiresAt: requestedExpiry,
+      ttl,
+      stats: normalizeStats(record.stats),
+    };
+  }
+
+  const ttl = requestedDays > 0 ? requestedDays * SECONDS_PER_DAY : 0;
+  return {
+    createdAt,
+    validityDays: requestedDays,
+    expiresAt: ttl > 0 ? new Date(Date.now() + ttl * 1000).toISOString() : null,
+    ttl,
+    stats: normalizeStats(record.stats),
+  };
+}
+
+function normalizeIsoDate(value) {
+  if (!value) return '';
+  const date = new Date(String(value));
+  return Number.isNaN(date.valueOf()) ? '' : date.toISOString();
+}
+
+function normalizeStats(stats = {}) {
+  const totalClicks = Math.max(0, Math.floor(Number(stats.totalClicks) || 0));
+  const countries = {};
+  for (const [country, count] of Object.entries(stats.countries || {})) {
+    const normalizedCountry = normalizeCountry(country);
+    const normalizedCount = Math.max(0, Math.floor(Number(count) || 0));
+    if (normalizedCount > 0) countries[normalizedCountry] = (countries[normalizedCountry] || 0) + normalizedCount;
+  }
+  return { totalClicks, countries };
+}
+
+function serializeStatsFields(stats = {}) {
+  const fields = {};
+  if (Number(stats.totalClicks) > 0) fields.total = Math.floor(Number(stats.totalClicks));
+  for (const [country, count] of Object.entries(stats.countries || {})) {
+    const normalizedCount = Math.max(0, Math.floor(Number(count) || 0));
+    if (normalizedCount > 0) fields[`country:${normalizeCountry(country)}`] = normalizedCount;
+  }
+  return fields;
+}
+
+function summarizeImportRows(rows) {
+  return {
+    imported: rows.filter((row) => row.status === 'imported').length,
+    skipped: rows.filter((row) => row.status === 'skipped').length,
+    expired: rows.filter((row) => row.status === 'expired').length,
+    failed: rows.filter((row) => row.status === 'error').length,
+    rows,
   };
 }
 

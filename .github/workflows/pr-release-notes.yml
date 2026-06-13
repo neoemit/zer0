@@ -1,0 +1,41 @@
+name: PR release notes
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release notes section
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+          const body = event.pull_request?.body || '';
+          const heading = body.match(/^## Release notes\s*$/mi);
+          if (!heading) {
+            console.error('PR body must include a "## Release notes" section.');
+            process.exit(1);
+          }
+          const sectionStart = heading.index + heading[0].length;
+          const rest = body.slice(sectionStart);
+          const nextHeading = rest.search(/^##\s/m);
+          const section = nextHeading >= 0 ? rest.slice(0, nextHeading) : rest;
+
+          const meaningfulLines = section
+            .split('\n')
+            .map((line) => line.trim())
+            .filter((line) => line && !line.startsWith('<!--') && line !== '-');
+
+          if (meaningfulLines.length === 0) {
+            console.error('Add at least one release-note bullet, or use "- No user-facing changes.".');
+            process.exit(1);
+          }
+          NODE

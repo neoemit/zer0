@@ -126,39 +126,83 @@ export class RedisStore {
   }
 
   async updateValidity(code, validityDays) {
+    return this.updateLink(code, { validityDays });
+  }
+
+  async updateLink(code, updates = {}) {
     const targetUrl = await this.redis.get(urlKey(code));
     if (!targetUrl) return null;
 
-    const normalizedDays = normalizeValidityDays(validityDays);
-    const ttl = normalizedDays > 0 ? normalizedDays * SECONDS_PER_DAY : 0;
-    const expiresAt = ttl > 0 ? new Date(Date.now() + ttl * 1000).toISOString() : null;
-    const metadata = { code, targetUrl, validityDays: normalizedDays };
-    if (expiresAt) metadata.expiresAt = expiresAt;
-
-    const pipeline = this.redis.pipeline()
-      .hset(metaKey(code), metadata);
-    if (ttl > 0) {
-      pipeline
-        .expire(urlKey(code), ttl)
-        .expire(metaKey(code), ttl)
-        .expire(statsKey(code), ttl);
-    } else {
-      pipeline
-        .persist(urlKey(code))
-        .persist(metaKey(code))
-        .persist(statsKey(code))
-        .hdel(metaKey(code), 'expiresAt');
-    }
-    await pipeline.exec();
-
-    const [metadataAfter, stats, remainingTtl] = await Promise.all([
+    const [existingMetadata, statsFields, currentTtl] = await Promise.all([
       this.redis.hgetall(metaKey(code)),
-      this.getStats(code),
+      this.redis.hgetall(statsKey(code)),
       this.redis.ttl(urlKey(code)),
     ]);
+    const nextCode = String(updates.code || code);
+    const isRenaming = nextCode !== code;
+    if (isRenaming && await this.redis.exists(urlKey(nextCode))) {
+      return { conflict: true };
+    }
+
+    const nextTargetUrl = Object.hasOwn(updates, 'targetUrl') ? String(updates.targetUrl) : targetUrl;
+    const validityWasUpdated = Object.hasOwn(updates, 'validityDays');
+    const ttl = validityWasUpdated
+      ? validityDaysToTtl(updates.validityDays)
+      : normalizeTtlSeconds(currentTtl);
+    const normalizedDays = validityWasUpdated
+      ? normalizeValidityDays(updates.validityDays)
+      : normalizeValidityDays(existingMetadata.validityDays ?? (ttl > 0 ? Math.ceil(ttl / SECONDS_PER_DAY) : 0));
+    const expiresAt = ttl > 0
+      ? (validityWasUpdated ? new Date(Date.now() + ttl * 1000).toISOString() : existingMetadata.expiresAt || new Date(Date.now() + ttl * 1000).toISOString())
+      : null;
+    const metadata = { code: nextCode, targetUrl: nextTargetUrl, validityDays: normalizedDays };
+    if (existingMetadata.createdAt) metadata.createdAt = existingMetadata.createdAt;
+    if (expiresAt) metadata.expiresAt = expiresAt;
+
+    if (isRenaming) {
+      const created = ttl > 0
+        ? await this.redis.set(urlKey(nextCode), nextTargetUrl, 'EX', ttl, 'NX')
+        : await this.redis.set(urlKey(nextCode), nextTargetUrl, 'NX');
+      if (created !== 'OK') return { conflict: true };
+
+      const pipeline = this.redis.pipeline()
+        .srem(CODE_INDEX_KEY, code)
+        .sadd(CODE_INDEX_KEY, nextCode)
+        .del(urlKey(code), metaKey(code), statsKey(code))
+        .hset(metaKey(nextCode), metadata);
+      if (Object.keys(statsFields).length > 0) pipeline.hset(statsKey(nextCode), statsFields);
+      if (ttl > 0) {
+        pipeline
+          .expire(metaKey(nextCode), ttl)
+          .expire(statsKey(nextCode), ttl);
+      }
+      await pipeline.exec();
+    } else {
+      const pipeline = this.redis.pipeline()
+        .hset(metaKey(code), metadata);
+      if (ttl > 0) {
+        pipeline
+          .set(urlKey(code), nextTargetUrl, 'EX', ttl)
+          .expire(metaKey(code), ttl)
+          .expire(statsKey(code), ttl);
+      } else {
+        pipeline
+          .set(urlKey(code), nextTargetUrl)
+          .persist(metaKey(code))
+          .persist(statsKey(code))
+          .hdel(metaKey(code), 'expiresAt');
+      }
+      await pipeline.exec();
+    }
+
+    const [metadataAfter, stats, remainingTtl] = await Promise.all([
+      this.redis.hgetall(metaKey(nextCode)),
+      this.getStats(nextCode),
+      this.redis.ttl(urlKey(nextCode)),
+    ]);
     return buildLink({
-      code,
-      targetUrl,
+      code: nextCode,
+      targetUrl: nextTargetUrl,
       metadata: metadataAfter,
       stats,
       ttl: remainingTtl,
@@ -342,6 +386,11 @@ function summarizeImportRows(rows) {
 function normalizeTtlSeconds(ttlSeconds) {
   const ttl = Math.floor(Number(ttlSeconds) || DEFAULT_RETENTION_SECONDS);
   return ttl > 0 ? ttl : 0;
+}
+
+function validityDaysToTtl(validityDays) {
+  const days = normalizeValidityDays(validityDays);
+  return days > 0 ? days * SECONDS_PER_DAY : 0;
 }
 
 function normalizeValidityDays(value) {

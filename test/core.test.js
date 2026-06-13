@@ -6,6 +6,7 @@ import {
   captchaCanBeSkipped,
   makeCode,
   normalizeTargetUrl,
+  sanitizeCustomSlug,
   validateCustomSlug,
 } from '../src/core.js';
 import { loadConfig } from '../src/config.js';
@@ -44,6 +45,11 @@ test('validates custom slugs for safe routing', () => {
   for (const slug of ['', 'ab', 'a/b', '..', 'admin', 'api', 'hello world', 'x.y', 'this-slug-is-way-too-long-for-the-router-and-cache']) {
     assert.throws(() => validateCustomSlug(slug), undefined, `${slug} should be rejected`);
   }
+});
+
+test('sanitizes imported slugs by keeping only routable characters', () => {
+  assert.equal(sanitizeCustomSlug('/snippets/'), 'snippets');
+  assert.equal(sanitizeCustomSlug(' /Cape Town_2026! '), 'CapeTown_2026');
 });
 
 test('generated codes have expected length and URL-safe alphabet', () => {

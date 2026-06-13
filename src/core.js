@@ -40,6 +40,10 @@ export function validateCustomSlug(slug) {
   return value;
 }
 
+export function sanitizeCustomSlug(slug) {
+  return String(slug ?? '').trim().replace(/[^A-Za-z0-9_-]/g, '');
+}
+
 export function makeCode(length = DEFAULT_CODE_LENGTH) {
   if (!Number.isInteger(length) || length < 3 || length > 48) {
     throw new Error('Invalid code length');

@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test",
-    "lint": "node --check src/*.js test/*.test.js"
+    "lint": "node --check src/*.js src/ui/*.js test/*.test.js"
   },
   "engines": {
     "node": ">=22"

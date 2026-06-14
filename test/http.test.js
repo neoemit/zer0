@@ -675,26 +675,36 @@ test('admin page asks for an admin token and fetches all links', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
 
   const response = await app.inject({ method: 'GET', url: '/admin' });
+  const script = await app.inject({ method: 'GET', url: '/assets/admin.js' });
 
   assert.equal(response.statusCode, 200);
   assert.match(response.headers['content-type'], /text\/html/);
   assert.match(response.body, /Admin token/);
   assert.match(response.body, /id="admin-token"/);
-  assert.match(response.body, /\/api\/admin\/links/);
-  assert.match(response.body, /X-Admin-Token/);
-  assert.match(response.body, /Total clicks/);
+  assert.match(response.body, /id="dashboard-panel"[^>]*hidden/);
+  assert.match(response.body, /src="\/assets\/admin\.js"/);
+  assert.match(script.body, /\/api\/admin\/links/);
+  assert.match(script.body, /X-Admin-Token/);
+  assert.match(script.body, /Total links/);
   await app.close();
 });
 
-test('admin page inline script is valid JavaScript', async () => {
+test('frontend assets are served with correct types and valid JavaScript', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
 
-  const response = await app.inject({ method: 'GET', url: '/admin' });
-  const script = response.body.match(/<script>([\s\S]*)<\/script>/)?.[1] || '';
-
-  assert.equal(response.statusCode, 200);
-  assert.ok(script);
-  assert.doesNotThrow(() => new Script(script));
+  for (const asset of ['theme.js', 'public.js', 'admin.js']) {
+    const response = await app.inject({ method: 'GET', url: `/assets/${asset}` });
+    assert.equal(response.statusCode, 200);
+    assert.match(response.headers['content-type'], /text\/javascript/);
+    assert.doesNotThrow(() => new Script(response.body), `${asset} should be valid JavaScript`);
+  }
+  for (const asset of ['common.css', 'public.css', 'admin.css']) {
+    const response = await app.inject({ method: 'GET', url: `/assets/${asset}` });
+    assert.equal(response.statusCode, 200);
+    assert.match(response.headers['content-type'], /text\/css/);
+  }
+  const missing = await app.inject({ method: 'GET', url: '/assets/missing.js' });
+  assert.equal(missing.statusCode, 404);
   await app.close();
 });
 
@@ -708,112 +718,131 @@ test('admin page redirects token query strings away from the URL', async () => {
   await app.close();
 });
 
-test('admin page formats countries with flags and full names', async () => {
+test('admin page formats country statistics with full names', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
 
-  const response = await app.inject({ method: 'GET', url: '/admin' });
+  const page = await app.inject({ method: 'GET', url: '/admin' });
+  const response = await app.inject({ method: 'GET', url: '/assets/admin.js' });
 
   assert.equal(response.statusCode, 200);
-  assert.match(response.body, /formatCountry/);
+  assert.match(page.body, /<dialog id="clicks-dialog"/);
+  assert.match(page.body, /id="clicks-country-list"/);
   assert.match(response.body, /countryName/);
+  assert.match(response.body, /countryFlag/);
+  assert.match(response.body, /data-clicks-code/);
   assert.match(response.body, /South Africa/);
   assert.match(response.body, /Unknown/);
-  assert.match(response.body, /🏴‍☠️/);
   await app.close();
 });
 
 test('admin page stores the token locally, supports auto-load, pagination, and logout', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
 
-  const response = await app.inject({ method: 'GET', url: '/admin' });
+  const page = await app.inject({ method: 'GET', url: '/admin' });
+  const response = await app.inject({ method: 'GET', url: '/assets/admin.js' });
 
   assert.equal(response.statusCode, 200);
-  assert.match(response.body, /localStorage\.setItem\('zer0:adminToken'/);
-  assert.match(response.body, /localStorage\.getItem\('zer0:adminToken'/);
-  assert.match(response.body, /localStorage\.removeItem\('zer0:adminToken'/);
-  assert.match(response.body, /id="logout"/);
+  assert.match(response.body, /localStorage\.setItem\(tokenStorageKey/);
+  assert.match(response.body, /localStorage\.getItem\(tokenStorageKey/);
+  assert.match(response.body, /localStorage\.removeItem\(tokenStorageKey/);
+  assert.match(response.body, /pageSizeStorageKey = 'zer0:adminPageSize'/);
+  assert.match(response.body, /localStorage\.getItem\(pageSizeStorageKey\)/);
+  assert.match(response.body, /localStorage\.setItem\(pageSizeStorageKey/);
+  assert.match(response.body, /allowedPageSizes = \[10, 25, 50, 100\]/);
+  assert.match(page.body, /id="logout"/);
   assert.match(response.body, /Previous/);
   assert.match(response.body, /Next/);
-  assert.match(response.body, /pageSize/);
-  assert.match(response.body, /renderPage/);
+  assert.match(response.body, /state\.pageSize/);
+  assert.match(response.body, /renderDashboard/);
   await app.close();
 });
 
-test('admin page hides zero country counters and manages authenticated state clearly', async () => {
+test('admin page handles empty country breakdowns and manages authenticated state clearly', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
 
-  const response = await app.inject({ method: 'GET', url: '/admin' });
+  const page = await app.inject({ method: 'GET', url: '/admin' });
+  const response = await app.inject({ method: 'GET', url: '/assets/admin.js' });
 
   assert.equal(response.statusCode, 200);
-  assert.match(response.body, /filter\(\(\[_country, count\]\) => Number\(count\) > 0\)/);
-  assert.doesNotMatch(response.body, /formatCountry\('ZZ'\) \+ ': 0/);
+  assert.match(response.body, /No country data/);
+  assert.match(response.body, /countryBreakdownRow/);
   assert.match(response.body, /setAuthenticated\(true\)/);
   assert.match(response.body, /setAuthenticated\(false\)/);
-  assert.match(response.body, /id="auth-panel"/);
-  assert.match(response.body, /hidden/);
-  assert.match(response.body, /aria-describedby="admin-token-help"/);
-  assert.match(response.body, /aria-busy/);
-  assert.match(response.body, /aria-current/);
+  assert.match(page.body, /id="auth-panel"/);
+  assert.match(page.body, /aria-describedby="admin-token-help"/);
+  assert.match(page.body, /aria-busy/);
+  assert.match(page.body, /<dialog id="edit-dialog"/);
   await app.close();
 });
 
-test('admin page supports confirmed per-link deletion and hides dashboard until authenticated', async () => {
+test('admin page uses an accessible confirmation dialog for deletion', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
 
-  const response = await app.inject({ method: 'GET', url: '/admin' });
+  const page = await app.inject({ method: 'GET', url: '/admin' });
+  const response = await app.inject({ method: 'GET', url: '/assets/admin.js' });
 
   assert.equal(response.statusCode, 200);
-  assert.match(response.body, /id="dashboard-panel"[^>]*hidden/);
-  assert.match(response.body, /setAuthenticated\(true\)/);
-  assert.match(response.body, /dashboardPanel\.hidden = !isAuthenticated/);
-  assert.doesNotMatch(response.body, /Only non-zero country counters are shown\./);
-  assert.match(response.body, /class="delete-link danger-button"/);
-  assert.match(response.body, /data-code="' \+ escapeAttr\(link\.code\) \+ '"/);
-  assert.match(response.body, /confirm\('Delete \/' \+ code \+ '\\?/);
-  assert.match(response.body, /fetch\('\/api\/admin\/links\/' \+ encodeURIComponent\(code\)/);
+  assert.match(page.body, /<dialog id="delete-dialog"/);
+  assert.match(page.body, /id="delete-form"/);
+  assert.doesNotMatch(response.body, /\bconfirm\(/);
+  assert.match(response.body, /\/api\/admin\/links\/\$\{encodeURIComponent\(code\)\}/);
   assert.match(response.body, /method: 'DELETE'/);
-  assert.match(response.body, /deleteLink\(code\)/);
+  assert.match(response.body, /deleteLink/);
   await app.close();
 });
 
 test('admin page supports searching and editing per-link fields', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
 
-  const response = await app.inject({ method: 'GET', url: '/admin' });
+  const page = await app.inject({ method: 'GET', url: '/admin' });
+  const response = await app.inject({ method: 'GET', url: '/assets/admin.js' });
 
   assert.equal(response.statusCode, 200);
-  assert.match(response.body, /id="link-search"/);
+  assert.match(page.body, /id="link-search"/);
   assert.match(response.body, /matchingLinks/);
-  assert.match(response.body, /class="link-edit-form"/);
-  assert.match(response.body, /name="code"/);
-  assert.match(response.body, /name="targetUrl"/);
+  assert.ok(
+    response.body.indexOf('const filteredLinks = matchingLinks()')
+      < response.body.indexOf('const visibleLinks = filteredLinks.slice'),
+    'search filtering must happen before pagination',
+  );
+  assert.match(response.body, /state\.links\.filter/);
+  assert.match(page.body, /<dialog id="edit-dialog"/);
+  assert.match(page.body, /name="code"/);
+  assert.match(page.body, /name="targetUrl"/);
   assert.match(response.body, /saveLink/);
   assert.match(response.body, /method: 'PATCH'/);
-  assert.match(response.body, /validitySummary/);
-  assert.match(response.body, /0 keeps this link valid indefinitely/);
+  assert.match(response.body, /validityData/);
+  assert.match(page.body, /Use 0 to keep this link valid indefinitely/);
+  assert.doesNotMatch(response.body, /<th scope="col">Created<\/th>/);
+  assert.doesNotMatch(response.body, /data-label="Created"/);
+  assert.match(response.body, /class="validity-inline"/);
+  assert.match(response.body, /class="destination-link"/);
+  assert.doesNotMatch(response.body, /displayHostname/);
+  assert.doesNotMatch(response.body, />\/\$\{escapeHtml\(link\.code\)\}<\/a>/);
   await app.close();
 });
 
 test('admin page exposes import and export controls', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
 
-  const response = await app.inject({ method: 'GET', url: '/admin' });
+  const page = await app.inject({ method: 'GET', url: '/admin' });
+  const response = await app.inject({ method: 'GET', url: '/assets/admin.js' });
 
   assert.equal(response.statusCode, 200);
-  assert.match(response.body, /id="export-data"/);
-  assert.match(response.body, /id="toggle-import"/);
-  assert.match(response.body, /id="import-mode"/);
-  assert.match(response.body, /zer0 export/);
-  assert.match(response.body, /Custom CSV/);
+  assert.match(page.body, /id="export-data"/);
+  assert.match(page.body, /id="open-import"/);
+  assert.match(page.body, /<dialog id="import-dialog"/);
+  assert.match(page.body, /zer0 backup/);
+  assert.match(page.body, /Custom CSV/);
   assert.match(response.body, /parseCsv/);
   assert.match(response.body, /\/api\/admin\/export/);
   assert.match(response.body, /\/api\/admin\/import/);
-  assert.match(response.body, /Existing slugs will be skipped/);
+  assert.match(page.body, /Existing slugs are skipped/);
   assert.match(response.body, /source/);
   assert.match(response.body, /target/);
   assert.match(response.body, /hits/);
   assert.match(response.body, /data-import-manual/);
-  assert.match(response.body, /Rows needing attention/);
+  assert.match(response.body, /Review the rows that need attention/);
   await app.close();
 });
 
@@ -937,37 +966,56 @@ test('admin-only homepage gates the creation form behind the admin token', async
   });
 
   const response = await app.inject({ method: 'GET', url: '/' });
+  const script = await app.inject({ method: 'GET', url: '/assets/public.js' });
 
   assert.equal(response.statusCode, 200);
-  assert.match(response.body, /Admin-only mode/);
+  assert.match(response.body, /Restricted creator/);
   assert.match(response.body, /id="creation-auth"/);
   assert.match(response.body, /id="admin-token"/);
   assert.match(response.body, /id="creator-panel"[^>]*hidden/);
-  assert.match(response.body, /zer0:createAdminToken/);
-  assert.match(response.body, /X-Admin-Token/);
+  assert.match(script.body, /zer0:createAdminToken/);
+  assert.match(script.body, /X-Admin-Token/);
   await app.close();
 });
 
-test('homepage explains retention, has improved copy button UI, includes a custom slug generator, links the favicon, and has a self-hosting footer', async () => {
+test('homepage provides a polished creator, theme control, and source footer', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, retentionDays: 30 });
 
   const response = await app.inject({ method: 'GET', url: '/' });
+  const script = await app.inject({ method: 'GET', url: '/assets/public.js' });
 
   assert.equal(response.statusCode, 200);
-  assert.match(response.body, /Fast, self-hosted URL shortener/);
-  assert.match(response.body, /Default link validity is 30 days/);
+  assert.match(response.body, /Shorten a URL/);
+  assert.match(response.body, /The default is 30 days/);
   assert.match(response.body, /id="validity-days"/);
-  assert.match(response.body, /Use 0 to keep this link valid indefinitely/);
   assert.match(response.body, /id="generate-slug"/);
-  assert.match(response.body, /copy-short-url/);
-  assert.match(response.body, /result-card/);
-  assert.match(response.body, /captcha-wrap/);
+  assert.match(response.body, /id="result"/);
+  assert.match(response.body, /data-theme-value="system"/);
+  assert.match(response.body, /data-theme-value="light"/);
+  assert.match(response.body, /data-theme-value="dark"/);
+  assert.match(response.body, /src="\/assets\/theme\.js"/);
+  assert.match(response.body, /src="\/assets\/public\.js"/);
+  assert.match(script.body, /data-copy-url/);
   assert.match(response.body, /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg">/);
   assert.match(response.body, /<footer class="site-footer"/);
-  assert.match(response.body, /Made with <span class="heart" aria-label="love">❤️<\/span> in Cape Town/);
-  assert.match(response.body, /Self-host your own zer0/);
+  assert.match(response.body, /Made with ❤️ in Cape Town/);
+  assert.match(response.body, /View source on GitHub/);
   assert.match(response.body, /href="https:\/\/github\.com\/neoemit\/zer0"/);
   assert.match(response.body, /rel="noopener noreferrer"/);
+  await app.close();
+});
+
+test('theme selection persists system light and dark preferences', async () => {
+  const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' } });
+
+  const page = await app.inject({ method: 'GET', url: '/' });
+  const script = await app.inject({ method: 'GET', url: '/assets/theme.js' });
+
+  assert.match(page.body, /zer0:theme/);
+  assert.match(page.body, /prefers-color-scheme: dark/);
+  assert.match(script.body, /localStorage\.setItem\(storageKey/);
+  assert.match(script.body, /media\.addEventListener\('change'/);
+  assert.match(script.body, /\['system', 'light', 'dark'\]/);
   await app.close();
 });
 
@@ -992,10 +1040,12 @@ test('missing short URLs render a branded invalid-link page instead of plain not
 
   assert.equal(response.statusCode, 404);
   assert.match(response.headers['content-type'], /text\/html/);
-  assert.match(response.body, /<title>Link no longer valid · zer0<\/title>/);
+  assert.match(response.body, /<title>Link no longer valid - zer0<\/title>/);
   assert.match(response.body, /This zer0 link is no longer valid/);
-  assert.match(response.body, /Ask the person who shared it to create a new zer0 link/);
-  assert.match(response.body, /class="zero-mark"/);
+  assert.match(response.body, /Ask the sender for a fresh link/);
+  assert.match(response.body, /class="error-code"/);
+  assert.match(response.body, /data-go-back/);
+  assert.match(response.body, /data-theme-value="system"/);
   assert.match(response.body, /href="\/favicon\.svg"/);
   assert.doesNotMatch(response.body, /^Not found$/);
   await app.close();

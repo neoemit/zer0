@@ -1,0 +1,182 @@
+.public-page {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+
+.public-main,
+.error-main {
+  width: min(100% - 2rem, 780px);
+  margin: 0 auto;
+  display: grid;
+  align-items: center;
+  padding: 2.5rem 0 4rem;
+}
+
+.creator-tool,
+.auth-tool,
+.error-tool {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.creator-tool {
+  overflow: hidden;
+}
+
+.creator-heading {
+  padding: 2rem 2rem 1.4rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.creator-heading p:last-child,
+.auth-heading p:last-child,
+.error-tool > p {
+  margin-bottom: 0;
+  color: var(--text-muted);
+}
+
+.creator-panel,
+.unlock-panel {
+  padding: 1.5rem 2rem 2rem;
+}
+
+.unlock-panel {
+  display: grid;
+  gap: 1.25rem;
+  background: var(--surface-subtle);
+}
+
+.unlock-form {
+  max-width: 560px;
+}
+
+.creator-form {
+  display: grid;
+  gap: 1.35rem;
+}
+
+.field-prominent input {
+  min-height: 54px;
+  font-size: 1.05rem;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(180px, 0.7fr);
+  gap: 1.2rem;
+}
+
+.captcha-area {
+  min-height: 1.35rem;
+}
+
+.form-actions {
+  justify-content: flex-end;
+}
+
+.form-actions .button {
+  width: auto;
+  min-width: 190px;
+}
+
+.result-panel {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+
+.result-panel[data-tone="error"] {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.result-panel[data-tone="success"] {
+  border-color: var(--success);
+  background: var(--success-soft);
+}
+
+.result-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.result-heading h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.result-link {
+  display: block;
+  margin-top: 0.75rem;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 1.15rem;
+  font-weight: 750;
+}
+
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.result-meta {
+  margin: 0.75rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.error-main {
+  width: min(100% - 2rem, 680px);
+}
+
+.error-tool {
+  padding: 2.5rem;
+  text-align: center;
+}
+
+.error-code {
+  margin-bottom: 1rem;
+  color: var(--accent);
+  font-size: 3.5rem;
+  font-weight: 800;
+}
+
+.error-tool .button-row {
+  justify-content: center;
+  margin-top: 1.5rem;
+}
+
+@media (max-width: 720px) {
+  .public-main,
+  .error-main {
+    padding: 1.25rem 0 2.5rem;
+  }
+
+  .creator-heading,
+  .creator-panel,
+  .unlock-panel,
+  .error-tool {
+    padding: 1.25rem;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .form-actions .button {
+    width: 100%;
+  }
+
+  .result-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

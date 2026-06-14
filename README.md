@@ -17,11 +17,12 @@ A tiny, fast, self-hosted URL shortener built for Docker Compose. zer0 keeps the
 - 🔒 **Admin-only creation mode**: set `ADMIN_ONLY_MODE=true` so only visitors with the admin token can create short URLs while redirects stay public.
 - 🗄️ **Redis persistence**: Docker Compose uses Redis 7 with AOF enabled.
 - ⏳ **User-selected validity**: pre-fill link validity from configuration, then let creators choose finite or indefinite validity per link.
-- 🎨 **Polished public UI**: the homepage includes a stylised zero favicon, copy-friendly result card, and a tasteful “Made with ❤️ in Cape Town” footer.
+- 🎨 **Modern responsive UI**: the public creator and admin workspace share a tidy design system with accessible controls, focused dialogs, and compact mobile layouts.
+- 🌓 **Theme selection**: choose System, Light, or Dark across the public creator, admin dashboard, and invalid-link page.
 - 🪐 **Branded invalid-link page**: expired, removed, missing, or malformed public short URLs render a helpful HTML page instead of plain `Not found` text.
 - 🏡 **Self-hosting prompt**: the homepage footer invites visitors to self-host their own zer0 and links to the source code at <https://github.com/neoemit/zer0>.
 - 📊 **Admin stats**: total clicks plus country buckets from local GeoIP lookup.
-- 🧭 **Admin dashboard**: token-based login, local token persistence, search, pagination, country names/flags, refresh, logout, per-link slug/destination/validity editing, import/export, deletion, and accessible status updates.
+- 🧭 **Admin dashboard**: token-based login, local token persistence, search, pagination, country names, refresh, logout, dialog-based link editing, guided import/export, deletion confirmation, and accessible status updates.
 - 🧹 **Cleanup controls**: delete one link or all links; deletion removes metadata, stats, and hot-cache entries so slugs can be reused with fresh counters.
 
 ## 🧱 Stack
@@ -121,9 +122,10 @@ The public homepage is intentionally lightweight and friendly:
 
 - a URL creation form with optional custom slug input, validity-days input, and a custom slug generator;
 - an admin-token gate for the creation form when `ADMIN_ONLY_MODE=true`;
-- a copy-friendly result card that explains the selected link validity;
+- a stable result panel with copy and open-link actions;
+- a System / Light / Dark theme selector persisted in browser `localStorage`;
 - a stylised zero favicon served from `/favicon.svg`;
-- a footer that says “Made with ❤️ in Cape Town”;
+- a "Made with ❤️ in Cape Town" footer;
 - a self-hosting note linking to the source code: <https://github.com/neoemit/zer0>.
 
 Self-host your own zer0 by forking or cloning the repository, configuring `.env`, and running Docker Compose from the quick-start commands above.
@@ -304,11 +306,13 @@ The dashboard:
 
 - stores a successfully used token in browser `localStorage` for future visits;
 - hides the token form and shows links only after authentication succeeds;
-- supports refresh, logout, substring search across slug and destination, pagination, per-link slug/destination/validity edits, zer0 export downloads, zer0 export imports, custom CSV imports, and delete buttons;
-- asks for confirmation before deleting a link;
-- displays country stats with flags and full country names;
+- supports refresh, logout, substring search across all slug and destination records before pagination, a remembered row-count preference, side-panel slug/destination/validity edits, zer0 export downloads, and a guided import dialog;
+- asks for confirmation in an accessible dialog before deleting a link;
+- opens an accessible country breakdown with flags when a link's click total is selected;
 - suppresses zero-valued country counters for unclicked links;
 - clears the stored token on logout or failed `401` authentication.
+
+The frontend remains build-free. Shared CSS and JavaScript are served from `/assets/*`, and the System / Light / Dark theme preference is shared across all HTML pages.
 
 ## 🧪 Development
 

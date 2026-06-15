@@ -68,10 +68,46 @@
   gap: 1.2rem;
 }
 
-.validity-field > label {
-  min-height: 32px;
-  display: flex;
-  align-items: center;
+@media (min-width: 721px) {
+  .settings-grid {
+    column-gap: 1.2rem;
+    row-gap: 0.4rem;
+  }
+
+  .settings-grid > .field {
+    display: contents;
+  }
+
+  .settings-grid .field-label-row {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .settings-grid .slug-input {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  #slug-help {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .validity-field > label {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .validity-field > .number-input {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  #validity-help {
+    grid-column: 2;
+    grid-row: 3;
+  }
 }
 
 .captcha-area {

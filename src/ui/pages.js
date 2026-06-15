@@ -62,7 +62,7 @@ export function renderHomePage({ siteKey, captchaEnabled, retentionDays, adminOn
                   <p id="slug-help" class="field-help">3-48 letters, numbers, underscores, or dashes.</p>
                 </div>
 
-                <div class="field">
+                <div class="field validity-field">
                   <label for="validity-days">Validity</label>
                   <div class="number-input">
                     <input id="validity-days" name="validityDays" type="number" min="0" step="1" inputmode="numeric" value="${retentionDays}" aria-describedby="validity-help">

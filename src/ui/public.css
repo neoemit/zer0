@@ -68,6 +68,12 @@
   gap: 1.2rem;
 }
 
+.validity-field > label {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+}
+
 .captcha-area {
   min-height: 1.35rem;
 }

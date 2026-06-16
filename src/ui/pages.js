@@ -96,12 +96,15 @@ export function renderHomePage({ siteKey, captchaEnabled, retentionDays, adminOn
   });
 }
 
-export function renderAdminPage() {
+export function renderAdminPage({ siteKey = '', captchaEnabled = false } = {}) {
+  const captchaMarkup = renderCaptcha({ siteKey, captchaEnabled });
+
   return renderDocument({
     title: 'zer0 admin',
     bodyClass: 'admin-page',
     styles: ['/assets/admin.css'],
     scripts: ['/assets/admin.js'],
+    captchaScript: captchaEnabled,
     content: `
       ${renderSiteHeader({ homeLink: true })}
       <main class="admin-main" id="main-content">
@@ -115,6 +118,9 @@ export function renderAdminPage() {
             <div class="field">
               <label for="admin-token">Admin token</label>
               <input id="admin-token" name="token" type="password" autocomplete="current-password" required aria-describedby="admin-token-help" placeholder="Enter admin token">
+            </div>
+            <div class="captcha-area">
+              ${captchaMarkup}
             </div>
             <button type="submit" class="button button-primary button-wide">Open dashboard</button>
           </form>

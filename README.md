@@ -13,7 +13,7 @@ A tiny, fast, self-hosted URL shortener built for Docker Compose. zer0 keeps the
 - 🚀 **Fast redirect hot path**: `GET /:code` validates the slug, checks the in-process hot cache, falls back to Redis on cache miss, records stats, and returns a `302 Location`.
 - 🧠 **In-process hot cache**: repeated redirects avoid Redis reads while still recording click stats.
 - 🧩 **Custom slug generator**: users can provide a safe custom slug or let zer0 generate a friendly one from the homepage.
-- 🛡️ **Cloudflare Turnstile on creation only**: redirects never pay the CAPTCHA cost; in admin-only mode, the CAPTCHA appears with the admin-token unlock gate instead of the link form.
+- 🛡️ **Cloudflare Turnstile on creation and admin access**: redirects never pay the CAPTCHA cost; the admin dashboard login always requires CAPTCHA, and admin-only creation places CAPTCHA with the creator unlock gate instead of the link form.
 - 🔒 **Admin-only creation mode**: set `ADMIN_ONLY_MODE=true` so only visitors with the admin token can create short URLs while redirects stay public.
 - 🗄️ **Redis persistence**: Docker Compose uses Redis 7 with AOF enabled.
 - ⏳ **User-selected validity**: pre-fill link validity from configuration, then let creators choose finite or indefinite validity per link.
@@ -30,7 +30,7 @@ A tiny, fast, self-hosted URL shortener built for Docker Compose. zer0 keeps the
 - **Node.js 24 + Fastify 5**: small service with low-overhead HTTP routing.
 - **Redis 7**: persistent key/value backing store with optional per-link TTLs.
 - **geoip-lite**: local country-level GeoIP lookup; unknown/private IPs are grouped as `ZZ`.
-- **Cloudflare Turnstile**: CAPTCHA protection for public URL creation and admin-only creator unlocks.
+- **Cloudflare Turnstile**: CAPTCHA protection for public URL creation, admin dashboard access, and admin-only creator unlocks.
 - **Docker Compose**: one app container plus Redis.
 
 ## 🚀 Quick start
@@ -56,7 +56,7 @@ Useful endpoints:
 - `PORT`: host/container app port. Default `3000`.
 - `TRUST_PROXY`: set `true` behind a trusted reverse proxy so IP-based stats use forwarded client IPs.
 - `CAPTCHA_PROVIDER`: `turnstile` or `none`. Defaults to `turnstile` when a Turnstile secret exists, otherwise `none`.
-- `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`: Cloudflare Turnstile keys for public creation CAPTCHA or admin-only creator unlock CAPTCHA.
+- `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`: Cloudflare Turnstile keys for public creation CAPTCHA, admin dashboard access CAPTCHA, or admin-only creator unlock CAPTCHA.
 - `CODE_LENGTH`: generated short-code length. Default `7` gives about 3.5 trillion possible base62 codes.
 - `RETENTION_DAYS`: default validity in days used to pre-fill the creation form and default API requests. `0` or unset means indefinite by default; users can still choose a different value per link.
 - `ADMIN_TOKEN`: enables admin-only stats/list/delete APIs and the `/admin` dashboard. Leave unset to disable the admin API.
@@ -140,7 +140,15 @@ Self-host your own zer0 by forking or cloning the repository, configuring `.env`
 
 ## 🔐 Admin API and dashboard
 
-Admin routes require `ADMIN_TOKEN`. The simplest header form is:
+Admin routes require `ADMIN_TOKEN`. The browser dashboard at `/admin` always asks for the admin token and CAPTCHA together when CAPTCHA is enabled, independent of `ADMIN_ONLY_MODE`. API clients can validate that pair before loading dashboard data:
+
+```bash
+curl -X POST http://localhost:3000/api/admin/auth \
+  -H 'content-type: application/json' \
+  -d '{"adminToken":"'$ADMIN_TOKEN'","captchaToken":"TURNSTILE_TOKEN"}'
+```
+
+After that access check, admin API calls use the admin token header:
 
 ```bash
 -H 'X-Admin-Token: $ADMIN_TOKEN'

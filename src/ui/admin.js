@@ -90,7 +90,7 @@
 
   elements.authForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    await loadLinks(elements.authToken.value.trim(), { persistToken: true, resetPage: true });
+    await verifyAdminAccess(elements.authToken.value.trim());
   });
 
   elements.refresh.addEventListener('click', async () => {
@@ -162,6 +162,39 @@
     loadLinks(savedToken, { persistToken: false, resetPage: true });
   } else {
     setAuthenticated(false);
+  }
+
+  async function verifyAdminAccess(adminToken) {
+    if (!adminToken) {
+      setStatus(elements.authStatus, 'Enter the admin token to continue.', 'error');
+      elements.authToken.focus();
+      return;
+    }
+
+    const payload = Object.fromEntries(new FormData(elements.authForm).entries());
+    payload.adminToken = adminToken;
+    setStatus(elements.authStatus, 'Verifying access...');
+
+    try {
+      const response = await fetch('/api/admin/auth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (window.turnstile) window.turnstile.reset();
+        clearStoredToken();
+        setAuthenticated(false);
+        setStatus(elements.authStatus, data.error || 'Failed to verify admin access.', 'error');
+        return;
+      }
+      await loadLinks(adminToken, { persistToken: true, resetPage: true });
+    } catch {
+      if (window.turnstile) window.turnstile.reset();
+      setAuthenticated(false);
+      setStatus(elements.authStatus, 'Could not verify admin access. Try again.', 'error');
+    }
   }
 
   async function loadLinks(adminToken, { persistToken, resetPage }) {

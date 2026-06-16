@@ -689,6 +689,67 @@ test('admin page asks for an admin token and fetches all links', async () => {
   await app.close();
 });
 
+
+test('admin page always shows captcha with the token request when Turnstile is configured', async () => {
+  for (const adminOnlyMode of [false, true]) {
+    const app = await buildApp({
+      store: new MemoryStore(),
+      publicBaseUrl: 'http://sho.rt',
+      captcha: { provider: 'turnstile', siteKey: 'admin-site-key', secretKey: 'secret' },
+      adminOnlyMode,
+      adminToken: 'secret',
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/admin' });
+    const formStart = response.body.indexOf('id="admin-form"');
+    const formEnd = response.body.indexOf('</form>', formStart);
+    const formMarkup = response.body.slice(formStart, formEnd);
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.body, /https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js/);
+    assert.match(formMarkup, /cf-turnstile/);
+    assert.match(formMarkup, /data-sitekey="admin-site-key"/);
+    await app.close();
+  }
+});
+
+test('admin page access validates captcha before loading dashboard links', async () => {
+  const calls = [];
+  const app = await buildApp({
+    store: new MemoryStore(),
+    publicBaseUrl: 'http://sho.rt',
+    captcha: { provider: 'turnstile', secretKey: 'secret' },
+    adminToken: 'secret',
+    fetchImpl: async (_url, options) => {
+      calls.push(options.body.get('response'));
+      return Response.json({ success: true });
+    },
+  });
+
+  const missingCaptcha = await app.inject({
+    method: 'POST',
+    url: '/api/admin/auth',
+    payload: { adminToken: 'secret' },
+  });
+  const wrongToken = await app.inject({
+    method: 'POST',
+    url: '/api/admin/auth',
+    payload: { adminToken: 'wrong', captchaToken: 'turnstile-token' },
+  });
+  const verified = await app.inject({
+    method: 'POST',
+    url: '/api/admin/auth',
+    payload: { adminToken: 'secret', captchaToken: 'turnstile-token' },
+  });
+
+  assert.equal(missingCaptcha.statusCode, 403);
+  assert.equal(wrongToken.statusCode, 401);
+  assert.equal(verified.statusCode, 200);
+  assert.deepEqual(JSON.parse(verified.body), { ok: true });
+  assert.deepEqual(calls, ['turnstile-token']);
+  await app.close();
+});
+
 test('frontend assets are served with correct types and valid JavaScript', async () => {
   const app = await buildApp({ store: new MemoryStore(), publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminToken: 'secret' });
 

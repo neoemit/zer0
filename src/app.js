@@ -69,7 +69,19 @@ export async function buildApp(opts) {
       return reply.redirect('/admin', 303);
     }
     reply.type('text/html; charset=utf-8');
-    return renderAdminPage();
+    return renderAdminPage({ siteKey: captcha.siteKey || '', captchaEnabled: !captchaCanBeSkipped(captcha) });
+  });
+
+  app.post('/api/admin/auth', async (request, reply) => {
+    const body = request.body || {};
+    if (!authorizeAdmin(request, reply, adminToken, { token: body.adminToken || body.token })) return reply;
+
+    const captchaToken = body.captchaToken || body['cf-turnstile-response'];
+    const captchaResult = await verifyCaptcha({ captcha, token: captchaToken, ip: request.ip, fetchImpl });
+    if (!captchaResult.ok) {
+      return reply.code(403).send({ error: captchaResult.reason || 'CAPTCHA verification failed' });
+    }
+    return { ok: true };
   });
 
   app.post('/api/creation-auth', async (request, reply) => {

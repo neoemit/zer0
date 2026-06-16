@@ -944,6 +944,52 @@ test('admin-only mode requires admin authentication before creating short URLs',
   await app.close();
 });
 
+
+test('admin-only creation validates captcha when the admin token unlocks the creator', async () => {
+  const calls = [];
+  const app = await buildApp({
+    store: new MemoryStore(),
+    publicBaseUrl: 'http://sho.rt',
+    captcha: { provider: 'turnstile', secretKey: 'secret' },
+    adminOnlyMode: true,
+    adminToken: 'secret',
+    fetchImpl: async (_url, options) => {
+      calls.push(options.body.get('response'));
+      return Response.json({ success: true });
+    },
+  });
+
+  const missingCaptcha = await app.inject({
+    method: 'POST',
+    url: '/api/creation-auth',
+    payload: { adminToken: 'secret' },
+  });
+  const wrongToken = await app.inject({
+    method: 'POST',
+    url: '/api/creation-auth',
+    payload: { adminToken: 'wrong', captchaToken: 'turnstile-token' },
+  });
+  const unlocked = await app.inject({
+    method: 'POST',
+    url: '/api/creation-auth',
+    payload: { adminToken: 'secret', captchaToken: 'turnstile-token' },
+  });
+  const created = await app.inject({
+    method: 'POST',
+    url: '/api/shorten',
+    headers: { 'x-admin-token': 'secret' },
+    payload: { url: 'https://example.com/private', slug: 'private3' },
+  });
+
+  assert.equal(missingCaptcha.statusCode, 403);
+  assert.equal(wrongToken.statusCode, 401);
+  assert.equal(unlocked.statusCode, 200);
+  assert.deepEqual(JSON.parse(unlocked.body), { ok: true });
+  assert.equal(created.statusCode, 201);
+  assert.deepEqual(calls, ['turnstile-token']);
+  await app.close();
+});
+
 test('admin-only mode cannot create links when ADMIN_TOKEN is not configured', async () => {
   const store = new MemoryStore();
   const app = await buildApp({ store, publicBaseUrl: 'http://sho.rt', captcha: { provider: 'none' }, adminOnlyMode: true });
@@ -975,6 +1021,50 @@ test('admin-only homepage gates the creation form behind the admin token', async
   assert.match(response.body, /id="creator-panel"[^>]*hidden/);
   assert.match(script.body, /zer0:createAdminToken/);
   assert.match(script.body, /X-Admin-Token/);
+  await app.close();
+});
+
+
+test('admin-only homepage places captcha with the admin token gate instead of the creator form', async () => {
+  const app = await buildApp({
+    store: new MemoryStore(),
+    publicBaseUrl: 'http://sho.rt',
+    captcha: { provider: 'turnstile', siteKey: 'site-key', secretKey: 'secret' },
+    adminOnlyMode: true,
+    adminToken: 'secret',
+  });
+
+  const response = await app.inject({ method: 'GET', url: '/' });
+  const authStart = response.body.indexOf('id="creation-auth"');
+  const authEnd = response.body.indexOf('</section>', authStart);
+  const creatorStart = response.body.indexOf('id="creator-panel"');
+  const creatorEnd = response.body.indexOf('</form>', creatorStart);
+  const authMarkup = response.body.slice(authStart, authEnd);
+  const creatorMarkup = response.body.slice(creatorStart, creatorEnd);
+
+  assert.equal(response.statusCode, 200);
+  assert.match(authMarkup, /cf-turnstile/);
+  assert.match(authMarkup, /data-sitekey="site-key"/);
+  assert.doesNotMatch(creatorMarkup, /cf-turnstile|CAPTCHA is disabled/);
+  await app.close();
+});
+
+test('public homepage keeps captcha in the link creation form when admin-only mode is off', async () => {
+  const app = await buildApp({
+    store: new MemoryStore(),
+    publicBaseUrl: 'http://sho.rt',
+    captcha: { provider: 'turnstile', siteKey: 'site-key', secretKey: 'secret' },
+  });
+
+  const response = await app.inject({ method: 'GET', url: '/' });
+  const creatorStart = response.body.indexOf('id="creator-panel"');
+  const creatorEnd = response.body.indexOf('</form>', creatorStart);
+  const creatorMarkup = response.body.slice(creatorStart, creatorEnd);
+
+  assert.equal(response.statusCode, 200);
+  assert.doesNotMatch(response.body, /id="creation-auth"/);
+  assert.match(creatorMarkup, /cf-turnstile/);
+  assert.match(creatorMarkup, /data-sitekey="site-key"/);
   await app.close();
 });
 

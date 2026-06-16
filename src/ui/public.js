@@ -71,15 +71,35 @@
       unlockCreator(storedToken);
     }
 
-    adminTokenForm.addEventListener('submit', (event) => {
+    adminTokenForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       const tokenValue = adminToken.value.trim();
       if (!tokenValue) {
         lockCreator('Enter the admin token to unlock link creation.');
         return;
       }
-      localStorage.setItem(tokenStorageKey, tokenValue);
-      unlockCreator(tokenValue);
+
+      const payload = Object.fromEntries(new FormData(adminTokenForm).entries());
+      payload.adminToken = tokenValue;
+
+      try {
+        const response = await fetch('/api/creation-auth', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          if (window.turnstile) window.turnstile.reset();
+          lockCreator(data.error || 'The admin token or CAPTCHA was rejected. Try again.');
+          return;
+        }
+        localStorage.setItem(tokenStorageKey, tokenValue);
+        unlockCreator(tokenValue);
+      } catch {
+        if (window.turnstile) window.turnstile.reset();
+        lockCreator('Could not verify the admin token. Check your connection and try again.');
+      }
     });
   }
 

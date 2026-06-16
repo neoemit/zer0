@@ -6,14 +6,14 @@
 ![Fastify](https://img.shields.io/badge/Fastify-5.x-000000?style=flat-square&logo=fastify&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-7-C92F24?style=flat-square&logo=redis&logoColor=white)
 
-A tiny, fast, self-hosted URL shortener built for Docker Compose. zer0 keeps the redirect path lean, protects link creation with CAPTCHA, stores links in Redis, and includes a browser admin dashboard for stats and cleanup.
+A tiny, fast, self-hosted URL shortener built for Docker Compose. zer0 keeps the redirect path lean, protects public link creation with CAPTCHA, stores links in Redis, and includes a browser admin dashboard for stats and cleanup.
 
 ## ✨ Features
 
 - 🚀 **Fast redirect hot path**: `GET /:code` validates the slug, checks the in-process hot cache, falls back to Redis on cache miss, records stats, and returns a `302 Location`.
 - 🧠 **In-process hot cache**: repeated redirects avoid Redis reads while still recording click stats.
 - 🧩 **Custom slug generator**: users can provide a safe custom slug or let zer0 generate a friendly one from the homepage.
-- 🛡️ **Cloudflare Turnstile on creation only**: redirects never pay the CAPTCHA cost.
+- 🛡️ **Cloudflare Turnstile on creation only**: redirects never pay the CAPTCHA cost; in admin-only mode, the CAPTCHA appears with the admin-token unlock gate instead of the link form.
 - 🔒 **Admin-only creation mode**: set `ADMIN_ONLY_MODE=true` so only visitors with the admin token can create short URLs while redirects stay public.
 - 🗄️ **Redis persistence**: Docker Compose uses Redis 7 with AOF enabled.
 - ⏳ **User-selected validity**: pre-fill link validity from configuration, then let creators choose finite or indefinite validity per link.
@@ -30,7 +30,7 @@ A tiny, fast, self-hosted URL shortener built for Docker Compose. zer0 keeps the
 - **Node.js 24 + Fastify 5**: small service with low-overhead HTTP routing.
 - **Redis 7**: persistent key/value backing store with optional per-link TTLs.
 - **geoip-lite**: local country-level GeoIP lookup; unknown/private IPs are grouped as `ZZ`.
-- **Cloudflare Turnstile**: CAPTCHA protection for URL creation.
+- **Cloudflare Turnstile**: CAPTCHA protection for public URL creation and admin-only creator unlocks.
 - **Docker Compose**: one app container plus Redis.
 
 ## 🚀 Quick start
@@ -56,7 +56,7 @@ Useful endpoints:
 - `PORT`: host/container app port. Default `3000`.
 - `TRUST_PROXY`: set `true` behind a trusted reverse proxy so IP-based stats use forwarded client IPs.
 - `CAPTCHA_PROVIDER`: `turnstile` or `none`. Defaults to `turnstile` when a Turnstile secret exists, otherwise `none`.
-- `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`: Cloudflare Turnstile keys for creation CAPTCHA.
+- `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`: Cloudflare Turnstile keys for public creation CAPTCHA or admin-only creator unlock CAPTCHA.
 - `CODE_LENGTH`: generated short-code length. Default `7` gives about 3.5 trillion possible base62 codes.
 - `RETENTION_DAYS`: default validity in days used to pre-fill the creation form and default API requests. `0` or unset means indefinite by default; users can still choose a different value per link.
 - `ADMIN_TOKEN`: enables admin-only stats/list/delete APIs and the `/admin` dashboard. Leave unset to disable the admin API.
@@ -84,13 +84,21 @@ curl -X POST http://localhost:3000/api/shorten \
   -d '{"url":"https://example.com","slug":"optional-custom-slug","validityDays":30,"captchaToken":"TURNSTILE_TOKEN"}'
 ```
 
-When `ADMIN_ONLY_MODE=true`, creation also requires the admin token:
+When `ADMIN_ONLY_MODE=true`, the homepage asks for the admin token and CAPTCHA together before showing the creator. API clients should verify that pair first:
+
+```bash
+curl -X POST http://localhost:3000/api/creation-auth \
+  -H 'content-type: application/json' \
+  -d '{"adminToken":"'$ADMIN_TOKEN'","captchaToken":"TURNSTILE_TOKEN"}'
+```
+
+Then create links with the admin token header. The creation request itself does not include a CAPTCHA token in admin-only mode because the CAPTCHA belongs to the unlock step:
 
 ```bash
 curl -X POST http://localhost:3000/api/shorten \
   -H 'content-type: application/json' \
   -H 'X-Admin-Token: $ADMIN_TOKEN' \
-  -d '{"url":"https://example.com","slug":"optional-custom-slug","validityDays":30,"captchaToken":"TURNSTILE_TOKEN"}'
+  -d '{"url":"https://example.com","slug":"optional-custom-slug","validityDays":30}'
 ```
 
 Only visitors with the admin token can create short URLs in admin-only mode. Redirects stay public, so every short URL that an admin creates can still be used by anyone.
@@ -121,7 +129,7 @@ Returns `302 Location: <target-url>` when the slug exists. If the short URL is e
 The public homepage is intentionally lightweight and friendly:
 
 - a URL creation form with optional custom slug input, validity-days input, and a custom slug generator;
-- an admin-token gate for the creation form when `ADMIN_ONLY_MODE=true`;
+- an admin-token gate with CAPTCHA for the creation form when `ADMIN_ONLY_MODE=true`;
 - a stable result panel with copy and open-link actions;
 - a System / Light / Dark theme selector persisted in browser `localStorage`;
 - a stylised zero favicon served from `/favicon.svg`;

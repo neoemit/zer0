@@ -4,6 +4,7 @@ export function renderHomePage({ siteKey, captchaEnabled, retentionDays, adminOn
   const retentionCopy = retentionDays > 0
     ? `The default is ${retentionDays} days. Set 0 for no expiry.`
     : 'Links do not expire by default. Enter a positive number to add an expiry.';
+  const captchaMarkup = renderCaptcha({ siteKey, captchaEnabled });
 
   return renderDocument({
     title: 'zer0 URL shortener',
@@ -36,6 +37,9 @@ export function renderHomePage({ siteKey, captchaEnabled, retentionDays, adminOn
                     <input id="admin-token" name="adminToken" type="password" autocomplete="current-password" required aria-describedby="admin-token-help" placeholder="Enter admin token">
                     <button type="submit" class="button button-primary">Unlock</button>
                   </div>
+                </div>
+                <div class="captcha-area">
+                  ${captchaMarkup}
                 </div>
               </form>
               <p id="auth-status" class="status-message" aria-live="polite"></p>
@@ -72,11 +76,11 @@ export function renderHomePage({ siteKey, captchaEnabled, retentionDays, adminOn
                 </div>
               </div>
 
-              <div class="captcha-area">
-                ${captchaEnabled
-                  ? `<div class="cf-turnstile" data-sitekey="${escapeHtml(siteKey)}"></div>`
-                  : '<p class="field-help">CAPTCHA is disabled on this instance.</p>'}
-              </div>
+              ${adminOnlyMode ? '' : `
+                <div class="captcha-area">
+                  ${captchaMarkup}
+                </div>
+              `}
 
               <div class="form-actions">
                 <button type="submit" id="shorten-submit" class="button button-primary button-wide">Create short link</button>
@@ -405,6 +409,12 @@ function renderFooter() {
 
 function themeBootstrapScript() {
   return `(()=>{try{const p=localStorage.getItem('${THEME_STORAGE_KEY}')||'system';const d=p==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):p;document.documentElement.dataset.theme=d;document.documentElement.dataset.themePreference=p;document.documentElement.style.colorScheme=d}catch{}})();`;
+}
+
+function renderCaptcha({ siteKey, captchaEnabled }) {
+  return captchaEnabled
+    ? `<div class="cf-turnstile" data-sitekey="${escapeHtml(siteKey)}"></div>`
+    : '<p class="field-help">CAPTCHA is disabled on this instance.</p>';
 }
 
 function escapeHtml(value) {

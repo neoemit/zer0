@@ -32,6 +32,7 @@ export async function buildApp(opts) {
   const captcha = opts.captcha || { provider: 'none' };
   const adminToken = opts.adminToken || '';
   const adminOnlyMode = opts.adminOnlyMode === true;
+  const fetchImpl = opts.fetchImpl || fetch;
   const geolocateIp = opts.geolocateIp || defaultGeolocateIp;
   const store = opts.store;
   if (!store) throw new Error('store is required');
@@ -71,14 +72,32 @@ export async function buildApp(opts) {
     return renderAdminPage();
   });
 
+  app.post('/api/creation-auth', async (request, reply) => {
+    if (!adminOnlyMode) return reply.code(404).send({ error: 'Not found' });
+    if (!authorizeAdmin(request, reply, adminToken, {
+      token: request.body?.adminToken,
+      disabledMessage: 'Admin-only mode requires ADMIN_TOKEN to be configured',
+    })) return reply;
+
+    const body = request.body || {};
+    const captchaToken = body.captchaToken || body['cf-turnstile-response'];
+    const captchaResult = await verifyCaptcha({ captcha, token: captchaToken, ip: request.ip, fetchImpl });
+    if (!captchaResult.ok) {
+      return reply.code(403).send({ error: captchaResult.reason || 'CAPTCHA verification failed' });
+    }
+    return { ok: true };
+  });
+
   app.post('/api/shorten', { config: { rateLimit: opts.rateLimit ?? { max: 20, timeWindow: '1 minute' } } }, async (request, reply) => {
     if (adminOnlyMode && !authorizeAdmin(request, reply, adminToken, { disabledMessage: 'Admin-only mode requires ADMIN_TOKEN to be configured' })) return reply;
 
     const body = request.body || {};
-    const captchaToken = body.captchaToken || body['cf-turnstile-response'];
-    const captchaResult = await verifyCaptcha({ captcha, token: captchaToken, ip: request.ip });
-    if (!captchaResult.ok) {
-      return reply.code(403).send({ error: captchaResult.reason || 'CAPTCHA verification failed' });
+    if (!adminOnlyMode) {
+      const captchaToken = body.captchaToken || body['cf-turnstile-response'];
+      const captchaResult = await verifyCaptcha({ captcha, token: captchaToken, ip: request.ip, fetchImpl });
+      if (!captchaResult.ok) {
+        return reply.code(403).send({ error: captchaResult.reason || 'CAPTCHA verification failed' });
+      }
     }
 
     let targetUrl;
@@ -233,7 +252,7 @@ function authorizeAdmin(request, reply, adminToken, options = {}) {
 
   const authorization = request.headers.authorization || '';
   const bearer = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
-  const token = request.headers['x-admin-token'] || bearer;
+  const token = options.token ?? request.headers['x-admin-token'] ?? bearer;
   if (token !== adminToken) {
     reply.code(401).send({ error: 'Unauthorized' });
     return false;

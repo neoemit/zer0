@@ -56,23 +56,35 @@ export function renderHomePage({ siteKey, captchaEnabled, retentionDays, adminOn
               <div class="settings-grid">
                 <div class="field">
                   <div class="field-label-row">
-                    <label for="slug">Custom slug <span>Optional</span></label>
+                    <span class="label-help-group">
+                      <label for="slug">Custom slug <span>Optional</span></label>
+                      <span class="tooltip-wrapper">
+                        <button type="button" class="tooltip-trigger" aria-label="Custom slug requirements" aria-describedby="slug-help">?</button>
+                        <span id="slug-help" class="tooltip-bubble" role="tooltip">3-48 letters, numbers, underscores, or dashes.</span>
+                      </span>
+                    </span>
                     <button type="button" id="generate-slug" class="text-button">Generate</button>
                   </div>
                   <div class="slug-input">
                     <span aria-hidden="true">/</span>
                     <input id="slug" name="slug" pattern="[A-Za-z0-9_-]{3,48}" minlength="3" maxlength="48" autocomplete="off" aria-describedby="slug-help" placeholder="project-update">
                   </div>
-                  <p id="slug-help" class="field-help">3-48 letters, numbers, underscores, or dashes.</p>
                 </div>
 
                 <div class="field validity-field">
-                  <label for="validity-days">Validity</label>
+                  <div class="field-label-row">
+                    <span class="label-help-group">
+                      <label for="validity-days">Validity</label>
+                      <span class="tooltip-wrapper">
+                        <button type="button" class="tooltip-trigger" aria-label="Validity help" aria-describedby="validity-help">?</button>
+                        <span id="validity-help" class="tooltip-bubble" role="tooltip">${escapeHtml(retentionCopy)}</span>
+                      </span>
+                    </span>
+                  </div>
                   <div class="number-input">
                     <input id="validity-days" name="validityDays" type="number" min="0" step="1" inputmode="numeric" value="${retentionDays}" aria-describedby="validity-help">
                     <span>days</span>
                   </div>
-                  <p id="validity-help" class="field-help">${escapeHtml(retentionCopy)}</p>
                 </div>
               </div>
 

@@ -22,6 +22,7 @@ export async function buildApp(opts) {
     logger: opts.logger ?? true,
     trustProxy: opts.trustProxy ?? false,
     bodyLimit: 16 * 1024,
+    ignoreTrailingSlash: true,
   });
 
   const cache = opts.cache ?? new HotCache(opts.hotCache);

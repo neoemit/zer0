@@ -79,12 +79,18 @@
   const savedPageSize = normalizePageSize(localStorage.getItem(pageSizeStorageKey));
   elements.pageSize.value = String(savedPageSize);
 
+  const sortComparators = {
+    code: (left, right) => String(left.code || '').localeCompare(String(right.code || '')),
+    totalClicks: (left, right) => (Number(left.totalClicks) || 0) - (Number(right.totalClicks) || 0),
+  };
+
   const state = {
     links: [],
     page: 1,
     pageSize: savedPageSize,
     searchQuery: '',
     token: '',
+    sort: { key: 'code', direction: 'asc' },
     import: emptyImportState(),
   };
 
@@ -116,6 +122,11 @@
   });
 
   elements.results.addEventListener('click', (event) => {
+    const sortButton = event.target.closest('[data-sort-key]');
+    if (sortButton) {
+      setSort(sortButton.dataset.sortKey);
+      return;
+    }
     const clicksButton = event.target.closest('[data-clicks-code]');
     if (clicksButton) {
       openClicksDialog(clicksButton.dataset.clicksCode);
@@ -263,8 +274,38 @@
     localStorage.removeItem(tokenStorageKey);
   }
 
+  function setSort(key) {
+    if (!sortComparators[key]) return;
+    if (state.sort.key === key) {
+      state.sort.direction = state.sort.direction === 'asc' ? 'desc' : 'asc';
+    } else {
+      state.sort = { key, direction: 'asc' };
+    }
+    state.page = 1;
+    renderDashboard();
+  }
+
+  function sortLinks(links) {
+    const comparator = sortComparators[state.sort.key] || sortComparators.code;
+    const sorted = [...links].sort(comparator);
+    return state.sort.direction === 'desc' ? sorted.reverse() : sorted;
+  }
+
+  function sortHeader(key, label) {
+    const active = state.sort.key === key;
+    const ariaSort = active ? (state.sort.direction === 'asc' ? 'ascending' : 'descending') : 'none';
+    const indicator = active ? (state.sort.direction === 'asc' ? '▲' : '▼') : '';
+    return `
+      <th scope="col" aria-sort="${ariaSort}">
+        <button type="button" class="sort-button" data-sort-key="${key}" aria-label="Sort by ${escapeAttribute(label)}">
+          ${escapeHtml(label)}<span class="sort-indicator" aria-hidden="true">${indicator}</span>
+        </button>
+      </th>
+    `;
+  }
+
   function renderDashboard() {
-    const filteredLinks = matchingLinks();
+    const filteredLinks = sortLinks(matchingLinks());
     const pageCount = Math.max(1, Math.ceil(filteredLinks.length / state.pageSize));
     state.page = Math.min(Math.max(1, state.page), pageCount);
     const start = (state.page - 1) * state.pageSize;
@@ -297,9 +338,9 @@
         <table class="link-table">
           <thead>
             <tr>
-              <th scope="col">Link</th>
+              ${sortHeader('code', 'Link')}
               <th scope="col">Destination</th>
-              <th scope="col">Clicks</th>
+              ${sortHeader('totalClicks', 'Clicks')}
               <th scope="col">Validity</th>
               <th scope="col"><span class="sr-only">Actions</span></th>
             </tr>
@@ -477,7 +518,6 @@
 
       const index = state.links.findIndex((link) => link.code === originalCode);
       if (index >= 0) state.links[index] = data;
-      state.links.sort((left, right) => left.code.localeCompare(right.code));
       closeDialog(elements.editDialog);
       renderDashboard();
       setStatus(elements.status, `/${data.code} saved.`, 'success');

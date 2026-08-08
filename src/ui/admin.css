@@ -136,6 +136,39 @@
   text-transform: uppercase;
 }
 
+.link-table th:has(.sort-button) {
+  padding: 0;
+}
+
+.sort-button {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  padding: 0.8rem 0.9rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.sort-button:hover,
+.sort-button:focus-visible {
+  color: var(--accent);
+}
+
+.link-table th[aria-sort="ascending"] .sort-button,
+.link-table th[aria-sort="descending"] .sort-button {
+  color: var(--accent);
+}
+
+.sort-indicator {
+  font-size: 0.68rem;
+}
+
 .link-table tbody tr:last-child td,
 .preview-table tbody tr:last-child td,
 .result-table tbody tr:last-child td {

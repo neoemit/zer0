@@ -82,6 +82,11 @@
   const sortComparators = {
     code: (left, right) => String(left.code || '').localeCompare(String(right.code || '')),
     totalClicks: (left, right) => (Number(left.totalClicks) || 0) - (Number(right.totalClicks) || 0),
+    validity: (left, right) => {
+      const leftVal = left.expiresAt ? 0 : 1;
+      const rightVal = right.expiresAt ? 0 : 1;
+      return leftVal - rightVal;
+    },
   };
 
   const state = {
@@ -341,7 +346,7 @@
               ${sortHeader('code', 'Link')}
               <th scope="col">Destination</th>
               ${sortHeader('totalClicks', 'Clicks')}
-              <th scope="col">Validity</th>
+              ${sortHeader('validity', 'Validity')}
               <th scope="col"><span class="sr-only">Actions</span></th>
             </tr>
           </thead>

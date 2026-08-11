@@ -153,6 +153,7 @@
   text-transform: inherit;
   letter-spacing: inherit;
   cursor: pointer;
+  transition: color 0.2s ease;
 }
 
 .sort-button:hover,

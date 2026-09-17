@@ -65,6 +65,7 @@ Useful endpoints:
 - `HOT_CACHE_TTL_MS`: hot cache TTL in milliseconds.
 - `REDIRECT_CACHE_CONTROL`: `Cache-Control` header on redirects. Default `public, max-age=300` helps browsers/CDNs cache redirects.
 - `CREATE_RATE_LIMIT_MAX` / `CREATE_RATE_LIMIT_WINDOW`: rate limit for the creation endpoint only.
+- `MAXMIND_LICENSE_KEY`: free [GeoLite2 key](https://www.maxmind.com/en/geolite2/signup) that keeps the country database current. See [GeoIP database updates](#-geoip-database-updates).
 
 For local development without CAPTCHA:
 
@@ -350,6 +351,20 @@ CAPTCHA_PROVIDER=none npm start
 Every pull request must include a `## Release notes` section. Use `- No user-facing changes.` when a PR should not appear in release notes. GitHub Actions validates that section on PRs, and `.github/release.yml` configures GitHub’s generated release notes for tagged releases.
 
 The project is currently versioned at `0.2.0`; create future GitHub releases from version tags after merging release-worthy changes.
+
+## 🌍 GeoIP database updates
+
+`geoip-lite` ships a GeoLite2 snapshot that is frozen when the npm package is published, while MaxMind reassigns address ranges twice a week. An instance running on the bundled copy therefore reports a slowly growing share of clicks as `ZZ` / Unknown, because newly allocated IPs are not in its database yet.
+
+`MAXMIND_LICENSE_KEY` is optional. Set it and zer0 refreshes the database itself: once at startup, then every seven days, reloading the data in place without a restart. The update runs in a child process, so redirects are unaffected, and MaxMind's checksum is compared first, so an already-current database costs one small request. Leave it unset and nothing is downloaded — the bundled snapshot is used as-is, and everything else in zer0 works the same either way.
+
+To enable it:
+
+1. Create a free MaxMind account at [maxmind.com/en/geolite2/signup](https://www.maxmind.com/en/geolite2/signup).
+2. Under **My License Keys**, generate a new license key (no credit card required).
+3. Set `MAXMIND_LICENSE_KEY` to that key in `.env` (or your deployment's environment) and restart zer0.
+
+Under Docker Compose the refreshed database lives in the `geoip-data` volume, seeded from the image on first run, so updates survive container restarts and image rebuilds.
 
 ## 🏎️ Performance notes
 

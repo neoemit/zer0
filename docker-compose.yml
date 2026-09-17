@@ -14,12 +14,16 @@ services:
       CODE_LENGTH: ${CODE_LENGTH:-7}
       RETENTION_DAYS: ${RETENTION_DAYS:-0}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
       ADMIN_ONLY_MODE: ${ADMIN_ONLY_MODE:-false}
       HOT_CACHE_MAX_ENTRIES: ${HOT_CACHE_MAX_ENTRIES:-100000}
       HOT_CACHE_TTL_MS: ${HOT_CACHE_TTL_MS:-300000}
       REDIRECT_CACHE_CONTROL: ${REDIRECT_CACHE_CONTROL:-public, max-age=300}
       CREATE_RATE_LIMIT_MAX: ${CREATE_RATE_LIMIT_MAX:-20}
       CREATE_RATE_LIMIT_WINDOW: ${CREATE_RATE_LIMIT_WINDOW:-1 minute}
+    volumes:
+      # Seeded from the image on first run, then kept fresh by the weekly GeoLite2 update.
+      - geoip-data:/app/node_modules/geoip-lite/data
     ports:
       - "${PORT:-3000}:3000"
     depends_on:
@@ -40,3 +44,4 @@ services:
 
 volumes:
   redis-data:
+  geoip-data:

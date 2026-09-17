@@ -1,10 +1,13 @@
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
+import { startGeoipAutoUpdate } from './geoip.js';
 import { RedisStore } from './store.js';
 
 const config = loadConfig();
 const store = RedisStore.fromUrl(config.redisUrl);
 const app = await buildApp({ ...config, store });
+
+startGeoipAutoUpdate({ licenseKey: config.maxmindLicenseKey, log: app.log });
 
 const shutdown = async () => {
   app.log.info('shutting down');

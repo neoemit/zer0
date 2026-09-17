@@ -9,6 +9,7 @@ export function loadConfig(env = process.env) {
     codeLength: Number(env.CODE_LENGTH || 7),
     retentionDays: normalizeRetentionDays(env.RETENTION_DAYS),
     adminToken: env.ADMIN_TOKEN || '',
+    maxmindLicenseKey: env.MAXMIND_LICENSE_KEY || '',
     adminOnlyMode: env.ADMIN_ONLY_MODE === 'true',
     redirectCacheControl: env.REDIRECT_CACHE_CONTROL || 'public, max-age=300',
     hotCache: {

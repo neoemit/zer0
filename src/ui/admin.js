@@ -57,6 +57,10 @@
     clicksTotal: document.querySelector('#clicks-total'),
     clicksLink: document.querySelector('#clicks-link'),
     clicksCountryList: document.querySelector('#clicks-country-list'),
+    qrDialog: document.querySelector('#qr-dialog'),
+    qrImage: document.querySelector('#qr-image'),
+    qrCode: document.querySelector('#qr-code'),
+    qrStatus: document.querySelector('#qr-status'),
     deleteDialog: document.querySelector('#delete-dialog'),
     deleteForm: document.querySelector('#delete-form'),
     deleteCode: document.querySelector('#delete-code'),
@@ -135,6 +139,11 @@
     const clicksButton = event.target.closest('[data-clicks-code]');
     if (clicksButton) {
       openClicksDialog(clicksButton.dataset.clicksCode);
+      return;
+    }
+    const qrButton = event.target.closest('[data-qr-code]');
+    if (qrButton) {
+      showQrCode(qrButton.dataset.qrCode);
       return;
     }
     const editButton = event.target.closest('[data-edit-code]');
@@ -386,6 +395,9 @@
             aria-label="View country breakdown for ${totalClicks.toLocaleString()} clicks on ${escapeAttribute(link.code)}"
           >${totalClicks.toLocaleString()}</button>
         </td>
+        <td data-label="QR">
+          <button type="button" class="row-action" data-qr-code="${escapeAttribute(link.code)}">QR</button>
+        </td>
         <td data-label="Validity">
           <div class="validity-inline">
             <span class="status-badge" data-tone="${validity.tone}">${escapeHtml(validity.label)}</span>
@@ -450,6 +462,26 @@
       ? countries.map(([country, count]) => countryBreakdownRow(country, count, totalClicks)).join('')
       : '<div class="country-empty"><strong>No country data</strong><p>This link has no geographically attributed clicks yet.</p></div>';
     openDialog(elements.clicksDialog, elements.clicksDialog.querySelector('[data-close-dialog]'));
+  }
+
+  async function showQrCode(code) {
+    elements.qrImage.src = '';
+    elements.qrCode.textContent = code;
+    setStatus(elements.qrStatus, 'Loading QR code...');
+    openDialog(elements.qrDialog, null);
+
+    try {
+      const response = await fetch(`/api/admin/qr/${encodeURIComponent(code)}`);
+      if (!response.ok) {
+        setStatus(elements.qrStatus, 'Failed to load QR code', 'error');
+        return;
+      }
+      const qrData = await response.blob();
+      elements.qrImage.src = URL.createObjectURL(qrData);
+      setStatus(elements.qrStatus, '');
+    } catch (error) {
+      setStatus(elements.qrStatus, `Error: ${error.message}`, 'error');
+    }
   }
 
   function countryBreakdownRow(country, count, totalClicks) {

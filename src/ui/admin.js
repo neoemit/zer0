@@ -487,7 +487,9 @@
       if (currentQrPngUrl) URL.revokeObjectURL(currentQrPngUrl);
       currentQrPngUrl = URL.createObjectURL(qrData);
       elements.qrImage.src = currentQrPngUrl;
-      setStatus(elements.qrStatus, '');
+
+      const copied = await copyQrToClipboard(qrData);
+      setStatus(elements.qrStatus, copied ? 'PNG copied to your clipboard.' : '', copied ? 'success' : '');
     } catch (error) {
       setStatus(elements.qrStatus, `Error: ${error.message}`, 'error');
     }
@@ -1043,6 +1045,21 @@
       element.dataset.tone = tone;
     } else {
       delete element.dataset.tone;
+    }
+  }
+
+  // Opening the QR is the moment the user wants it on the clipboard, so the PNG
+  // is copied as a side effect of showing it. Best effort: a browser or policy
+  // that refuses image clipboard writes must not break the dialog, so failure is
+  // silent and the download buttons remain the explicit path.
+  async function copyQrToClipboard(blob) {
+    try {
+      if (!navigator.clipboard || typeof window.ClipboardItem !== 'function') return false;
+      const png = blob.type === 'image/png' ? blob : new Blob([blob], { type: 'image/png' });
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+      return true;
+    } catch {
+      return false;
     }
   }
 

@@ -275,8 +275,9 @@
     const qrDialog = document.querySelector('#qr-dialog');
     const qrImage = document.querySelector('#qr-image');
     const qrStatus = document.querySelector('#qr-status');
+    const code = (document.querySelector('#qr-code')?.textContent || '').trim();
     
-    if (!qrImage || !qrImage.src) return;
+    if (!qrImage || !qrImage.src || !code) return;
     
     try {
       const response = await fetch(qrImage.src);
@@ -284,7 +285,7 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'qr-code.png';
+      a.download = `qr-${code}.png`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

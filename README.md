@@ -331,6 +331,37 @@ The dashboard:
 
 The frontend remains build-free. Shared CSS and JavaScript are served from `/assets/*`, and the System / Light / Dark theme preference is shared across all HTML pages.
 
+## 🔳 QR codes
+
+Every short link has a QR code, available as PNG or SVG:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/admin/qr/:code` | `image/png`, 256×256 |
+| `GET /api/admin/qr/:code?format=svg` | `image/svg+xml` |
+
+Both use the same admin guard as the rest of `/api/admin/*` (`X-Admin-Token`), and answer `404` for an
+unknown or invalid slug. The encoded URL is `${PUBLIC_BASE_URL}/${code}`, so codes are correct for any
+deployment.
+
+In the UI, the dashboard has a **QR** action on every row and the create page has a **QR code** button
+on the result. The dialog shows the code, puts the PNG on the clipboard as it opens (best effort — a
+browser or policy that refuses image clipboard writes leaves the dialog and the downloads untouched),
+and offers **Download PNG** / **Download SVG**, saved as `qr-<slug>.<ext>`.
+
+Implementation notes:
+
+- `src/qr.js` wraps the `qrcode` package — `toDataURL` for PNG, `toString` for SVG; 256px, margin 2,
+  error-correction level M.
+- **Send bytes, not the data URL text.** `reply.type('image/png').send(dataUrl.replace('data:image/png;base64,',''))`
+  transmits base64 with a PNG content type; the image then never renders (`naturalWidth === 0`) and no
+  error is raised. The route sends `Buffer.from(base64, 'base64')` plus a `content-length`.
+- The dialog markup is shared by the admin page and the create page (`renderQrDialog()` in
+  `src/ui/pages.js`) and is shown with `showModal()`; a native `<dialog>` is not displayed by setting
+  `hidden` or a CSS class.
+- The table header carries a `QR` column — the row body has six cells, so omitting it shifts Validity
+  and Actions under the wrong labels.
+
 ## 🧪 Development
 
 ```bash

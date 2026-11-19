@@ -345,7 +345,6 @@ function serializeAdminLink({ code, targetUrl, createdAt, validityDays, expiresA
   return {
     code,
     shortUrl: `${publicBaseUrl}/${code}`,
-    qrUrl: `${publicBaseUrl}/api/admin/qr/${code}`,
     targetUrl,
     ...(createdAt ? { createdAt } : {}),
     validityDays: normalizeValidityDays(validityDays),

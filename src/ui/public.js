@@ -2,6 +2,8 @@
   const form = document.querySelector('#shorten-form');
   if (!form) return;
 
+  const qrDialog = document.querySelector('#qr-dialog');
+  const qrDownloadPng = document.querySelector('#qr-download-png');
   const result = document.querySelector('#result');
   const slug = document.querySelector('#slug');
   const generateSlug = document.querySelector('#generate-slug');
@@ -184,6 +186,12 @@
     }
   });
 
+  if (qrDownloadPng) {
+    qrDownloadPng.addEventListener('click', () => {
+      downloadPng();
+    });
+  }
+
   function showResult(html, tone) {
     result.hidden = false;
     result.dataset.tone = tone;
@@ -242,6 +250,29 @@
       qrDialog.classList.add('active');
     } catch (error) {
       setStatus(qrStatus, `Error: ${error.message}`, 'error');
+    }
+  }
+
+  async function downloadPng() {
+    const qrDialog = document.querySelector('#qr-dialog');
+    const qrImage = document.querySelector('#qr-image');
+    const qrStatus = document.querySelector('#qr-status');
+    
+    if (!qrImage || !qrImage.src) return;
+    
+    try {
+      const response = await fetch(qrImage.src);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'qr-code.png';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setStatus(qrStatus, 'Failed to download PNG', 'error');
     }
   }
 

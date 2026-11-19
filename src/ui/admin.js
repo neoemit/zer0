@@ -471,7 +471,7 @@
     openDialog(elements.qrDialog, null);
 
     try {
-      const response = await fetch(`/api/admin/qr/${encodeURIComponent(code)}`);
+      const response = await fetch(`/api/admin/qr/${encodeURIComponent(code)}`, { headers: { 'X-Admin-Token': state.token } });
       if (!response.ok) {
         setStatus(elements.qrStatus, 'Failed to load QR code', 'error');
         return;

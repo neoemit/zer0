@@ -693,3 +693,18 @@ h3 {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* QR dialog — used by both the admin dashboard and the create page */
+.qr-dialog {
+  width: min(calc(100% - 2rem), 400px);
+}
+
+.qr-display {
+  display: flex;
+  justify-content: center;
+  margin: 1rem 0;
+}
+
+.qr-meta {
+  text-align: center;
+}

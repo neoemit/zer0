@@ -353,20 +353,6 @@
   width: min(calc(100% - 2rem), 560px);
 }
 
-.qr-dialog {
-  width: min(calc(100% - 2rem), 400px);
-}
-
-.qr-display {
-  display: flex;
-  justify-content: center;
-  margin: 1rem 0;
-}
-
-.qr-meta {
-  text-align: center;
-}
-
 .clicks-overview {
   display: flex;
   align-items: end;

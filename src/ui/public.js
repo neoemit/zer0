@@ -187,6 +187,13 @@
     }
   });
 
+  if (qrDialog) {
+    qrDialog.addEventListener('click', (event) => {
+      const closeButton = event.target.closest('[data-close-dialog]');
+      if (closeButton || event.target === qrDialog) qrDialog.close();
+    });
+  }
+
   if (qrDownloadPng) {
     qrDownloadPng.addEventListener('click', () => {
       downloadPng();
@@ -252,9 +259,13 @@
       const imageUrl = URL.createObjectURL(qrData);
       qrImage.src = imageUrl;
       setStatus(qrStatus, '');
-      // Show the dialog
-      qrDialog.hidden = false;
-      qrDialog.classList.add('active');
+      // Show the dialog (native <dialog>: hidden=false alone does not display it)
+      if (typeof qrDialog.showModal === 'function') {
+        if (!qrDialog.open) qrDialog.showModal();
+      } else {
+        qrDialog.hidden = false;
+        qrDialog.setAttribute('open', '');
+      }
     } catch (error) {
       setStatus(qrStatus, `Error: ${error.message}`, 'error');
     }

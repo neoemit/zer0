@@ -102,6 +102,7 @@ export function renderHomePage({ siteKey, captchaEnabled, retentionDays, adminOn
             <section id="result" class="result-panel" aria-live="polite" aria-atomic="true" hidden></section>
           </section>
         </section>
+      ${renderQrDialog()}
       </main>
       ${renderFooter()}
     `,
@@ -240,6 +241,8 @@ export function renderAdminPage({ siteKey = '', captchaEnabled = false } = {}) {
           </footer>
         </div>
       </dialog>
+
+      ${renderQrDialog()}
 
       <dialog id="delete-dialog" class="dialog confirm-dialog" aria-labelledby="delete-title">
         <form id="delete-form" class="dialog-layout">
@@ -388,6 +391,35 @@ function renderDocument({
   ${content}
 </body>
 </html>`;
+}
+
+function renderQrDialog() {
+  return `      <dialog id="qr-dialog" class="dialog qr-dialog" aria-labelledby="qr-title">
+          <div class="dialog-layout">
+            <header class="dialog-header">
+              <div>
+                <p class="section-kicker">QR Code</p>
+                <h2 id="qr-title">Scan to open</h2>
+              </div>
+              <button type="button" class="icon-text-button" data-close-dialog="qr-dialog">Close</button>
+            </header>
+            <div class="dialog-content">
+              <div class="qr-display">
+                <img id="qr-image" alt="QR code" style="width:128px;height:128px;">
+              </div>
+              <div class="qr-meta">
+                <p><strong>Link:</strong> <code id="qr-code"></code></p>
+                <p id="qr-status" class="status-message" aria-live="polite"></p>
+              </div>
+            </div>
+            <footer class="dialog-footer">
+              <button type="button" class="button button-secondary" id="qr-download-png">Download PNG</button>
+              <button type="button" class="button button-secondary" id="qr-download-svg">Download SVG</button>
+              <button type="button" class="button button-primary" data-close-dialog="qr-dialog">Close</button>
+            </footer>
+          </div>
+        </dialog>
+  `;
 }
 
 function renderSiteHeader({ homeLink = false, adminLink = false } = {}) {

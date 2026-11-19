@@ -12,6 +12,7 @@ import {
   renderHomePage,
   renderInvalidLinkPage as renderInvalidPage,
 } from './ui/pages.js';
+import { generateQrCode, generateQrSvg } from './qr.js';
 
 const SECONDS_PER_DAY = 24 * 60 * 60;
 const IMPORT_BODY_LIMIT_BYTES = 5 * 1024 * 1024;
@@ -228,6 +229,43 @@ export async function buildApp(opts) {
     const deleted = await store.deleteAll();
     cache.clear();
     return { deleted };
+  });
+
+  app.get('/api/admin/qr/:code', async (request, reply) => {
+    if (!authorizeAdmin(request, reply, adminToken)) return reply;
+    let code;
+    try {
+      code = validateCustomSlug(request.params.code);
+    } catch {
+      return reply.code(404).send({ error: 'Not found' });
+    }
+
+    const targetUrl = await store.get(code);
+    if (!targetUrl) return reply.code(404).send({ error: 'Not found' });
+
+    const shortUrl = `${publicBaseUrl}/${code}`;
+    const format = String(request.query?.format || 'png').toLowerCase();
+
+    if (format === 'svg') {
+      const svg = await generateQrSvg(shortUrl);
+      if (!svg) return reply.code(500).send({ error: 'Failed to generate QR code' });
+      return reply
+        .type('image/svg+xml; charset=utf-8')
+        .header('cache-control', 'public, max-age=300')
+        .send(svg);
+    }
+
+    const qrDataUrl = await generateQrCode(shortUrl);
+    if (!qrDataUrl) {
+      return reply.code(500).send({ error: 'Failed to generate QR code' });
+    }
+
+    const base64 = qrDataUrl.replace('data:image/png;base64,', '');
+    return reply
+      .type('image/png')
+      .header('content-length', String(Buffer.byteLength(base64, 'base64')))
+      .header('cache-control', 'public, max-age=300')
+      .send(Buffer.from(base64, 'base64'));
   });
 
   app.get('/:code', async (request, reply) => {

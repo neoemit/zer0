@@ -57,6 +57,12 @@
     clicksTotal: document.querySelector('#clicks-total'),
     clicksLink: document.querySelector('#clicks-link'),
     clicksCountryList: document.querySelector('#clicks-country-list'),
+    qrDialog: document.querySelector('#qr-dialog'),
+    qrImage: document.querySelector('#qr-image'),
+    qrCode: document.querySelector('#qr-code'),
+    qrStatus: document.querySelector('#qr-status'),
+    qrDownloadPng: document.querySelector('#qr-download-png'),
+    qrDownloadSvg: document.querySelector('#qr-download-svg'),
     deleteDialog: document.querySelector('#delete-dialog'),
     deleteForm: document.querySelector('#delete-form'),
     deleteCode: document.querySelector('#delete-code'),
@@ -77,6 +83,7 @@
   };
 
   const savedPageSize = normalizePageSize(localStorage.getItem(pageSizeStorageKey));
+  let currentQrPngUrl = null;
   elements.pageSize.value = String(savedPageSize);
 
   const sortComparators = {
@@ -110,6 +117,9 @@
 
   elements.exportData.addEventListener('click', exportLinks);
   elements.openImport.addEventListener('click', openImportDialog);
+  if (elements.qrDownloadPng) elements.qrDownloadPng.addEventListener('click', downloadQrPng);
+  if (elements.qrDownloadSvg) elements.qrDownloadSvg.addEventListener('click', downloadQrSvg);
+
   elements.logout.addEventListener('click', logout);
 
   elements.pageSize.addEventListener('change', () => {
@@ -135,6 +145,11 @@
     const clicksButton = event.target.closest('[data-clicks-code]');
     if (clicksButton) {
       openClicksDialog(clicksButton.dataset.clicksCode);
+      return;
+    }
+    const qrButton = event.target.closest('[data-qr-code]');
+    if (qrButton) {
+      showQrCode(qrButton.dataset.qrCode);
       return;
     }
     const editButton = event.target.closest('[data-edit-code]');
@@ -346,6 +361,7 @@
               ${sortHeader('code', 'Link')}
               <th scope="col">Destination</th>
               ${sortHeader('totalClicks', 'Clicks')}
+              <th scope="col">QR</th>
               ${sortHeader('validity', 'Validity')}
               <th scope="col"><span class="sr-only">Actions</span></th>
             </tr>
@@ -385,6 +401,9 @@
             data-clicks-code="${escapeAttribute(link.code)}"
             aria-label="View country breakdown for ${totalClicks.toLocaleString()} clicks on ${escapeAttribute(link.code)}"
           >${totalClicks.toLocaleString()}</button>
+        </td>
+        <td data-label="QR">
+          <button type="button" class="row-action" data-qr-code="${escapeAttribute(link.code)}">QR</button>
         </td>
         <td data-label="Validity">
           <div class="validity-inline">
@@ -450,6 +469,30 @@
       ? countries.map(([country, count]) => countryBreakdownRow(country, count, totalClicks)).join('')
       : '<div class="country-empty"><strong>No country data</strong><p>This link has no geographically attributed clicks yet.</p></div>';
     openDialog(elements.clicksDialog, elements.clicksDialog.querySelector('[data-close-dialog]'));
+  }
+
+  async function showQrCode(code) {
+    elements.qrImage.src = '';
+    elements.qrCode.textContent = code;
+    setStatus(elements.qrStatus, 'Loading QR code...');
+    openDialog(elements.qrDialog, null);
+
+    try {
+      const response = await fetch(`/api/admin/qr/${encodeURIComponent(code)}`, { headers: { 'X-Admin-Token': state.token } });
+      if (!response.ok) {
+        setStatus(elements.qrStatus, 'Failed to load QR code', 'error');
+        return;
+      }
+      const qrData = await response.blob();
+      if (currentQrPngUrl) URL.revokeObjectURL(currentQrPngUrl);
+      currentQrPngUrl = URL.createObjectURL(qrData);
+      elements.qrImage.src = currentQrPngUrl;
+
+      const copied = await copyQrToClipboard(qrData);
+      setStatus(elements.qrStatus, copied ? 'PNG copied to your clipboard.' : '', copied ? 'success' : '');
+    } catch (error) {
+      setStatus(elements.qrStatus, `Error: ${error.message}`, 'error');
+    }
   }
 
   function countryBreakdownRow(country, count, totalClicks) {
@@ -1002,6 +1045,56 @@
       element.dataset.tone = tone;
     } else {
       delete element.dataset.tone;
+    }
+  }
+
+  // Opening the QR is the moment the user wants it on the clipboard, so the PNG
+  // is copied as a side effect of showing it. Best effort: a browser or policy
+  // that refuses image clipboard writes must not break the dialog, so failure is
+  // silent and the download buttons remain the explicit path.
+  async function copyQrToClipboard(blob) {
+    try {
+      if (!navigator.clipboard || typeof window.ClipboardItem !== 'function') return false;
+      const png = blob.type === 'image/png' ? blob : new Blob([blob], { type: 'image/png' });
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function downloadQrPng() {
+    const code = elements.qrCode.textContent.trim();
+    if (!currentQrPngUrl || !code) return;
+    const link = document.createElement('a');
+    link.href = currentQrPngUrl;
+    link.download = `qr-${code}.png`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+  }
+
+  async function downloadQrSvg() {
+    const code = elements.qrCode.textContent.trim();
+    if (!code) return;
+    if (elements.qrDownloadSvg) elements.qrDownloadSvg.disabled = true;
+    try {
+      const response = await fetch(`/api/admin/qr/${encodeURIComponent(code)}?format=svg`, {
+        headers: { 'X-Admin-Token': state.token },
+      });
+      if (!response.ok) throw new Error(String(response.status));
+      const svgUrl = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = svgUrl;
+      link.download = `qr-${code}.svg`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(svgUrl), 1000);
+    } catch (error) {
+      setStatus(elements.qrStatus, `Failed to download SVG (${error.message})`, 'error');
+    } finally {
+      if (elements.qrDownloadSvg) elements.qrDownloadSvg.disabled = false;
     }
   }
 

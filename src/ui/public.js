@@ -2,6 +2,9 @@
   const form = document.querySelector('#shorten-form');
   if (!form) return;
 
+  const qrDialog = document.querySelector('#qr-dialog');
+  const qrDownloadPng = document.querySelector('#qr-download-png');
+  const qrDownloadSvg = document.querySelector('#qr-download-svg');
   const result = document.querySelector('#result');
   const slug = document.querySelector('#slug');
   const generateSlug = document.querySelector('#generate-slug');
@@ -148,7 +151,8 @@
         <p class="result-meta">${escapeHtml(validityCopy)}</p>
         <div class="result-actions">
           <button type="button" class="button button-primary" data-copy-url="${escapeAttribute(data.shortUrl)}">Copy link</button>
-          <a class="button button-secondary" href="${escapeAttribute(data.shortUrl)}" target="_blank" rel="noopener noreferrer">Open link</a>
+          <button type="button" class="button button-secondary" data-qr-url="${escapeAttribute(data.shortUrl)}">QR code</button>
+          <a class="button button-ghost" href="${escapeAttribute(data.shortUrl)}" target="_blank" rel="noopener noreferrer">Open link</a>
         </div>
       `, 'success');
       form.reset();
@@ -163,18 +167,44 @@
 
   result.addEventListener('click', async (event) => {
     const copyButton = event.target.closest('[data-copy-url]');
-    if (!copyButton) return;
-    const originalLabel = copyButton.textContent;
-    try {
-      await copyText(copyButton.dataset.copyUrl);
-      copyButton.textContent = 'Copied';
-    } catch {
-      copyButton.textContent = 'Copy failed';
+    if (copyButton) {
+      const originalLabel = copyButton.textContent;
+      try {
+        await copyText(copyButton.dataset.copyUrl);
+        copyButton.textContent = 'Copied';
+      } catch {
+        copyButton.textContent = 'Copy failed';
+      }
+      setTimeout(() => {
+        copyButton.textContent = originalLabel;
+      }, 1600);
+      return;
     }
-    setTimeout(() => {
-      copyButton.textContent = originalLabel;
-    }, 1600);
+    const qrButton = event.target.closest('[data-qr-url]');
+    if (qrButton) {
+      showQrCode(qrButton.dataset.qrUrl);
+      return;
+    }
   });
+
+  if (qrDialog) {
+    qrDialog.addEventListener('click', (event) => {
+      const closeButton = event.target.closest('[data-close-dialog]');
+      if (closeButton || event.target === qrDialog) qrDialog.close();
+    });
+  }
+
+  if (qrDownloadPng) {
+    qrDownloadPng.addEventListener('click', () => {
+      downloadPng();
+    });
+  }
+
+  if (qrDownloadSvg) {
+    qrDownloadSvg.addEventListener('click', () => {
+      downloadSvg();
+    });
+  }
 
   function showResult(html, tone) {
     result.hidden = false;
@@ -197,6 +227,114 @@
     const copied = document.execCommand('copy');
     textarea.remove();
     if (!copied) throw new Error('Copy failed');
+  }
+
+  async function showQrCode(shortUrl) {
+    const code = shortUrl.split('/').pop();
+    const qrDialog = document.querySelector('#qr-dialog');
+    const qrImage = document.querySelector('#qr-image');
+    const qrStatus = document.querySelector('#qr-status');
+    
+    if (!qrDialog || !qrImage) return;
+    
+    qrImage.src = '';
+    document.querySelector('#qr-code').textContent = code;
+    setStatus(qrStatus, 'Loading QR code...');
+    
+    const token = currentCreateToken();
+    if (!token) {
+      setStatus(qrStatus, 'QR codes require admin authentication', 'error');
+      return;
+    }
+    
+    try {
+      const response = await fetch(`/api/admin/qr/${encodeURIComponent(code)}`, { 
+        headers: { 'X-Admin-Token': token } 
+      });
+      if (!response.ok) {
+        setStatus(qrStatus, 'Failed to load QR code', 'error');
+        return;
+      }
+      const qrData = await response.blob();
+      const imageUrl = URL.createObjectURL(qrData);
+      qrImage.src = imageUrl;
+      setStatus(qrStatus, '');
+      const copied = await copyQrToClipboard(qrData);
+      if (copied) setStatus(qrStatus, 'PNG copied to your clipboard.', 'success');
+      // Show the dialog (native <dialog>: hidden=false alone does not display it)
+      if (typeof qrDialog.showModal === 'function') {
+        if (!qrDialog.open) qrDialog.showModal();
+      } else {
+        qrDialog.hidden = false;
+        qrDialog.setAttribute('open', '');
+      }
+    } catch (error) {
+      setStatus(qrStatus, `Error: ${error.message}`, 'error');
+    }
+  }
+
+  // Opening the QR is the moment the user wants it on the clipboard, so the PNG
+  // is copied as a side effect of showing it. Best effort: a browser or policy
+  // that refuses image clipboard writes must not break the dialog, so failure is
+  // silent and the download buttons remain the explicit path.
+  async function copyQrToClipboard(blob) {
+    try {
+      if (!navigator.clipboard || typeof window.ClipboardItem !== 'function') return false;
+      const png = blob.type === 'image/png' ? blob : new Blob([blob], { type: 'image/png' });
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function downloadPng() {
+    const qrDialog = document.querySelector('#qr-dialog');
+    const qrImage = document.querySelector('#qr-image');
+    const qrStatus = document.querySelector('#qr-status');
+    const code = (document.querySelector('#qr-code')?.textContent || '').trim();
+    
+    if (!qrImage || !qrImage.src || !code) return;
+    
+    try {
+      const response = await fetch(qrImage.src);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `qr-${code}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setStatus(qrStatus, 'Failed to download PNG', 'error');
+    }
+  }
+
+  async function downloadSvg() {
+    const qrStatus = document.querySelector('#qr-status');
+    const code = (document.querySelector('#qr-code')?.textContent || '').trim();
+    if (!code) return;
+    if (qrDownloadSvg) qrDownloadSvg.disabled = true;
+    try {
+      const response = await fetch(`/api/admin/qr/${encodeURIComponent(code)}?format=svg`, {
+        headers: { 'X-Admin-Token': currentCreateToken() },
+      });
+      if (!response.ok) throw new Error(String(response.status));
+      const url = URL.createObjectURL(await response.blob());
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `qr-${code}.svg`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      setStatus(qrStatus, 'Failed to download SVG', 'error');
+    } finally {
+      if (qrDownloadSvg) qrDownloadSvg.disabled = false;
+    }
   }
 
   function escapeHtml(value) {

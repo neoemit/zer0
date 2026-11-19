@@ -148,7 +148,8 @@
         <p class="result-meta">${escapeHtml(validityCopy)}</p>
         <div class="result-actions">
           <button type="button" class="button button-primary" data-copy-url="${escapeAttribute(data.shortUrl)}">Copy link</button>
-          <a class="button button-secondary" href="${escapeAttribute(data.shortUrl)}" target="_blank" rel="noopener noreferrer">Open link</a>
+          <button type="button" class="button button-secondary" data-qr-url="${escapeAttribute(data.shortUrl)}">QR code</button>
+          <a class="button button-ghost" href="${escapeAttribute(data.shortUrl)}" target="_blank" rel="noopener noreferrer">Open link</a>
         </div>
       `, 'success');
       form.reset();
@@ -163,17 +164,24 @@
 
   result.addEventListener('click', async (event) => {
     const copyButton = event.target.closest('[data-copy-url]');
-    if (!copyButton) return;
-    const originalLabel = copyButton.textContent;
-    try {
-      await copyText(copyButton.dataset.copyUrl);
-      copyButton.textContent = 'Copied';
-    } catch {
-      copyButton.textContent = 'Copy failed';
+    if (copyButton) {
+      const originalLabel = copyButton.textContent;
+      try {
+        await copyText(copyButton.dataset.copyUrl);
+        copyButton.textContent = 'Copied';
+      } catch {
+        copyButton.textContent = 'Copy failed';
+      }
+      setTimeout(() => {
+        copyButton.textContent = originalLabel;
+      }, 1600);
+      return;
     }
-    setTimeout(() => {
-      copyButton.textContent = originalLabel;
-    }, 1600);
+    const qrButton = event.target.closest('[data-qr-url]');
+    if (qrButton) {
+      showQrCode(qrButton.dataset.qrUrl);
+      return;
+    }
   });
 
   function showResult(html, tone) {
@@ -197,6 +205,44 @@
     const copied = document.execCommand('copy');
     textarea.remove();
     if (!copied) throw new Error('Copy failed');
+  }
+
+  async function showQrCode(shortUrl) {
+    const code = shortUrl.split('/').pop();
+    const qrDialog = document.querySelector('#qr-dialog');
+    const qrImage = document.querySelector('#qr-image');
+    const qrStatus = document.querySelector('#qr-status');
+    
+    if (!qrDialog || !qrImage) return;
+    
+    qrImage.src = '';
+    document.querySelector('#qr-code').textContent = code;
+    setStatus(qrStatus, 'Loading QR code...');
+    
+    const token = currentCreateToken();
+    if (!token) {
+      setStatus(qrStatus, 'QR codes require admin authentication', 'error');
+      return;
+    }
+    
+    try {
+      const response = await fetch(`/api/admin/qr/${encodeURIComponent(code)}`, { 
+        headers: { 'X-Admin-Token': token } 
+      });
+      if (!response.ok) {
+        setStatus(qrStatus, 'Failed to load QR code', 'error');
+        return;
+      }
+      const qrData = await response.blob();
+      const imageUrl = URL.createObjectURL(qrData);
+      qrImage.src = imageUrl;
+      setStatus(qrStatus, '');
+      // Show the dialog
+      qrDialog.hidden = false;
+      qrDialog.classList.add('active');
+    } catch (error) {
+      setStatus(qrStatus, `Error: ${error.message}`, 'error');
+    }
   }
 
   function escapeHtml(value) {

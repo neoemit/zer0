@@ -61,6 +61,8 @@
     qrImage: document.querySelector('#qr-image'),
     qrCode: document.querySelector('#qr-code'),
     qrStatus: document.querySelector('#qr-status'),
+    qrDownloadPng: document.querySelector('#qr-download-png'),
+    qrDownloadSvg: document.querySelector('#qr-download-svg'),
     deleteDialog: document.querySelector('#delete-dialog'),
     deleteForm: document.querySelector('#delete-form'),
     deleteCode: document.querySelector('#delete-code'),
@@ -81,6 +83,7 @@
   };
 
   const savedPageSize = normalizePageSize(localStorage.getItem(pageSizeStorageKey));
+  let currentQrPngUrl = null;
   elements.pageSize.value = String(savedPageSize);
 
   const sortComparators = {
@@ -114,6 +117,9 @@
 
   elements.exportData.addEventListener('click', exportLinks);
   elements.openImport.addEventListener('click', openImportDialog);
+  if (elements.qrDownloadPng) elements.qrDownloadPng.addEventListener('click', downloadQrPng);
+  if (elements.qrDownloadSvg) elements.qrDownloadSvg.addEventListener('click', downloadQrSvg);
+
   elements.logout.addEventListener('click', logout);
 
   elements.pageSize.addEventListener('change', () => {
@@ -355,6 +361,7 @@
               ${sortHeader('code', 'Link')}
               <th scope="col">Destination</th>
               ${sortHeader('totalClicks', 'Clicks')}
+              <th scope="col">QR</th>
               ${sortHeader('validity', 'Validity')}
               <th scope="col"><span class="sr-only">Actions</span></th>
             </tr>
@@ -477,7 +484,9 @@
         return;
       }
       const qrData = await response.blob();
-      elements.qrImage.src = URL.createObjectURL(qrData);
+      if (currentQrPngUrl) URL.revokeObjectURL(currentQrPngUrl);
+      currentQrPngUrl = URL.createObjectURL(qrData);
+      elements.qrImage.src = currentQrPngUrl;
       setStatus(elements.qrStatus, '');
     } catch (error) {
       setStatus(elements.qrStatus, `Error: ${error.message}`, 'error');
@@ -1034,6 +1043,41 @@
       element.dataset.tone = tone;
     } else {
       delete element.dataset.tone;
+    }
+  }
+
+  function downloadQrPng() {
+    const code = elements.qrCode.textContent.trim();
+    if (!currentQrPngUrl || !code) return;
+    const link = document.createElement('a');
+    link.href = currentQrPngUrl;
+    link.download = `qr-${code}.png`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+  }
+
+  async function downloadQrSvg() {
+    const code = elements.qrCode.textContent.trim();
+    if (!code) return;
+    if (elements.qrDownloadSvg) elements.qrDownloadSvg.disabled = true;
+    try {
+      const response = await fetch(`/api/admin/qr/${encodeURIComponent(code)}?format=svg`, {
+        headers: { 'X-Admin-Token': state.token },
+      });
+      if (!response.ok) throw new Error(String(response.status));
+      const svgUrl = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = svgUrl;
+      link.download = `qr-${code}.svg`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(svgUrl), 1000);
+    } catch (error) {
+      setStatus(elements.qrStatus, `Failed to download SVG (${error.message})`, 'error');
+    } finally {
+      if (elements.qrDownloadSvg) elements.qrDownloadSvg.disabled = false;
     }
   }
 

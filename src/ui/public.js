@@ -4,6 +4,7 @@
 
   const qrDialog = document.querySelector('#qr-dialog');
   const qrDownloadPng = document.querySelector('#qr-download-png');
+  const qrDownloadSvg = document.querySelector('#qr-download-svg');
   const result = document.querySelector('#result');
   const slug = document.querySelector('#slug');
   const generateSlug = document.querySelector('#generate-slug');
@@ -192,6 +193,12 @@
     });
   }
 
+  if (qrDownloadSvg) {
+    qrDownloadSvg.addEventListener('click', () => {
+      downloadSvg();
+    });
+  }
+
   function showResult(html, tone) {
     result.hidden = false;
     result.dataset.tone = tone;
@@ -273,6 +280,31 @@
       URL.revokeObjectURL(url);
     } catch (err) {
       setStatus(qrStatus, 'Failed to download PNG', 'error');
+    }
+  }
+
+  async function downloadSvg() {
+    const qrStatus = document.querySelector('#qr-status');
+    const code = (document.querySelector('#qr-code')?.textContent || '').trim();
+    if (!code) return;
+    if (qrDownloadSvg) qrDownloadSvg.disabled = true;
+    try {
+      const response = await fetch(`/api/admin/qr/${encodeURIComponent(code)}?format=svg`, {
+        headers: { 'X-Admin-Token': currentCreateToken() },
+      });
+      if (!response.ok) throw new Error(String(response.status));
+      const url = URL.createObjectURL(await response.blob());
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `qr-${code}.svg`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      setStatus(qrStatus, 'Failed to download SVG', 'error');
+    } finally {
+      if (qrDownloadSvg) qrDownloadSvg.disabled = false;
     }
   }
 

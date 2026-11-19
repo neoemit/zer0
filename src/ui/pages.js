@@ -260,6 +260,8 @@ export function renderAdminPage({ siteKey = '', captchaEnabled = false } = {}) {
             </div>
           </div>
           <footer class="dialog-footer">
+            <button type="button" class="button button-secondary" id="qr-download-png">Download PNG</button>
+            <button type="button" class="button button-secondary" id="qr-download-svg">Download SVG</button>
             <button type="button" class="button button-primary" data-close-dialog="qr-dialog">Close</button>
           </footer>
         </div>

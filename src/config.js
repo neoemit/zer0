@@ -20,6 +20,10 @@ export function loadConfig(env = process.env) {
       max: Number(env.CREATE_RATE_LIMIT_MAX || 20),
       timeWindow: env.CREATE_RATE_LIMIT_WINDOW || '1 minute',
     },
+    adminAuthRateLimit: {
+      max: env.ADMIN_AUTH_FAILURE_LIMIT,
+      windowMs: env.ADMIN_AUTH_FAILURE_WINDOW_MS,
+    },
     captcha: {
       provider: captchaProvider,
       siteKey: env.TURNSTILE_SITE_KEY || '',

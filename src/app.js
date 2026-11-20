@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import formBody from '@fastify/formbody';
 import rateLimit from '@fastify/rate-limit';
 
+import { createAdminAuthLimiter, tokensMatch } from './admin-auth.js';
 import { HotCache } from './cache.js';
 import { captchaCanBeSkipped, makeCode, normalizeTargetUrl, sanitizeCustomSlug, validateCustomSlug } from './core.js';
 import { verifyCaptcha } from './captcha.js';
@@ -37,6 +38,9 @@ export async function buildApp(opts) {
   const geolocateIp = opts.geolocateIp || defaultGeolocateIp;
   const store = opts.store;
   if (!store) throw new Error('store is required');
+
+  // Read by authorizeAdmin through request.server, so every admin route shares one limiter.
+  app.decorate('adminAuthLimiter', createAdminAuthLimiter(opts.adminAuthRateLimit));
 
   await app.register(formBody);
   await app.register(rateLimit, {
@@ -263,10 +267,19 @@ function authorizeAdmin(request, reply, adminToken, options = {}) {
     return false;
   }
 
+  // Lock out before comparing, otherwise a locked-out client could still tell a right guess from a wrong one.
+  const limiter = request.server.adminAuthLimiter;
+  const retryAfter = limiter.retryAfterSeconds(request.ip);
+  if (retryAfter > 0) {
+    reply.code(429).header('retry-after', String(retryAfter)).send({ error: 'Too many failed admin authentication attempts. Try again later.' });
+    return false;
+  }
+
   const authorization = request.headers.authorization || '';
   const bearer = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
   const token = options.token ?? request.headers['x-admin-token'] ?? bearer;
-  if (token !== adminToken) {
+  if (!tokensMatch(token, adminToken)) {
+    limiter.recordFailure(request.ip);
     reply.code(401).send({ error: 'Unauthorized' });
     return false;
   }

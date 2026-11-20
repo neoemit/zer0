@@ -1309,3 +1309,78 @@ test('creation requires captcha token when Turnstile is configured', async () =>
   assert.equal(response.statusCode, 403);
   await app.close();
 });
+
+test('admin auth locks out an IP after repeated failures, even for the correct token', async () => {
+  const app = await buildApp({
+    store: new MemoryStore(),
+    publicBaseUrl: 'http://sho.rt',
+    captcha: { provider: 'none' },
+    adminToken: 'secret',
+    adminAuthRateLimit: { max: 3, windowMs: 60_000 },
+  });
+  const attacker = '203.0.113.7';
+  const admin = '198.51.100.20';
+
+  const ok = await app.inject({ method: 'GET', url: '/api/admin/links', headers: { 'x-admin-token': 'secret' }, remoteAddress: attacker });
+  assert.equal(ok.statusCode, 200, 'successful requests do not count as failures');
+
+  const failures = [
+    await app.inject({ method: 'GET', url: '/api/admin/links', headers: { 'x-admin-token': 'wrong' }, remoteAddress: attacker }),
+    await app.inject({ method: 'GET', url: '/api/admin/export', headers: { authorization: 'Bearer wrong' }, remoteAddress: attacker }),
+    await app.inject({ method: 'POST', url: '/api/admin/auth', payload: { adminToken: 'wrong' }, remoteAddress: attacker }),
+  ];
+  assert.deepEqual(failures.map((response) => response.statusCode), [401, 401, 401]);
+
+  const lockedOut = await app.inject({ method: 'GET', url: '/api/admin/links', headers: { 'x-admin-token': 'secret' }, remoteAddress: attacker });
+  assert.equal(lockedOut.statusCode, 429);
+  assert.equal(lockedOut.headers['retry-after'], '60');
+  assert.deepEqual(JSON.parse(lockedOut.body), { error: 'Too many failed admin authentication attempts. Try again later.' });
+
+  const otherClient = await app.inject({ method: 'GET', url: '/api/admin/links', headers: { 'x-admin-token': 'secret' }, remoteAddress: admin });
+  assert.equal(otherClient.statusCode, 200);
+  await app.close();
+});
+
+test('admin auth lockout also covers admin-only creation', async () => {
+  const app = await buildApp({
+    store: new MemoryStore(),
+    publicBaseUrl: 'http://sho.rt',
+    captcha: { provider: 'none' },
+    adminToken: 'secret',
+    adminOnlyMode: true,
+    adminAuthRateLimit: { max: 2, windowMs: 60_000 },
+  });
+
+  const attempts = [];
+  for (const token of ['wrong-1', 'wrong-2', 'secret']) {
+    attempts.push(await app.inject({ method: 'POST', url: '/api/creation-auth', payload: { adminToken: token } }));
+  }
+  assert.deepEqual(attempts.map((response) => response.statusCode), [401, 401, 429]);
+
+  const shorten = await app.inject({
+    method: 'POST',
+    url: '/api/shorten',
+    headers: { 'x-admin-token': 'secret' },
+    payload: { url: 'https://example.com' },
+  });
+  assert.equal(shorten.statusCode, 429);
+  await app.close();
+});
+
+test('admin auth lockout can be disabled', async () => {
+  const app = await buildApp({
+    store: new MemoryStore(),
+    publicBaseUrl: 'http://sho.rt',
+    captcha: { provider: 'none' },
+    adminToken: 'secret',
+    adminAuthRateLimit: { max: 0 },
+  });
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const response = await app.inject({ method: 'GET', url: '/api/admin/links', headers: { 'x-admin-token': 'wrong' } });
+    assert.equal(response.statusCode, 401);
+  }
+  const ok = await app.inject({ method: 'GET', url: '/api/admin/links', headers: { 'x-admin-token': 'secret' } });
+  assert.equal(ok.statusCode, 200);
+  await app.close();
+});

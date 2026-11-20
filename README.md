@@ -65,6 +65,7 @@ Useful endpoints:
 - `HOT_CACHE_TTL_MS`: hot cache TTL in milliseconds.
 - `REDIRECT_CACHE_CONTROL`: `Cache-Control` header on redirects. Default `public, max-age=300` helps browsers/CDNs cache redirects.
 - `CREATE_RATE_LIMIT_MAX` / `CREATE_RATE_LIMIT_WINDOW`: rate limit for the creation endpoint only.
+- `ADMIN_AUTH_FAILURE_LIMIT` / `ADMIN_AUTH_FAILURE_WINDOW_MS`: failed admin-token attempts allowed per client IP before it is locked out of every admin-token check. Default `10` per `900000` ms (15 minutes); `0` disables the lockout. See [Admin API and dashboard](#-admin-api-and-dashboard).
 - `MAXMIND_LICENSE_KEY`: free [GeoLite2 key](https://www.maxmind.com/en/geolite2/signup) that keeps the country database current. See [GeoIP database updates](#-geoip-database-updates).
 
 For local development without CAPTCHA:
@@ -158,6 +159,8 @@ After that access check, admin API calls use the admin token header:
 The admin API also accepts a bearer `Authorization` header.
 
 If `ADMIN_TOKEN` is unset, admin APIs return `503` and stay disabled.
+
+Admin tokens are compared in constant time. After `ADMIN_AUTH_FAILURE_LIMIT` wrong tokens (default `10`) from one client IP, every admin-token check from that IP, including the admin-only creator and `POST /api/shorten` in `ADMIN_ONLY_MODE`, returns `429` with a `Retry-After` header until the `ADMIN_AUTH_FAILURE_WINDOW_MS` window that began with the first failure ends (default 15 minutes). A correct token is refused during the lockout too. Counters live in process memory, so each instance tracks its own and a restart clears them. Behind a reverse proxy, set `TRUST_PROXY=true` so the lockout applies to the real client IP rather than the proxy, which would otherwise lock everyone out together.
 
 ### Stats for one link
 

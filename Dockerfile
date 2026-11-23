@@ -4,6 +4,8 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 FROM node:24-alpine AS runtime
+# Pick up Alpine security fixes published after the Node base image was built.
+RUN apk upgrade --no-cache
 ENV NODE_ENV=production
 WORKDIR /app
 RUN addgroup -S zer0 && adduser -S zer0 -G zer0

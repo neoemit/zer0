@@ -10,6 +10,8 @@ permissions:
 
 jobs:
   validate:
+    # Dependabot PRs have no release-notes section; release.yml files them under "Dependencies".
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Validate release notes section
